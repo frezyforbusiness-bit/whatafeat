@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 
-// Mirrors server/actions activatePaymentAction gate without DB.
-function activatePayment(paymentsEnabled: boolean) {
+function activatePayment(paymentsEnabled) {
   if (!paymentsEnabled) {
     throw new Error("Payments are not available yet. Trades work without payment.");
   }
