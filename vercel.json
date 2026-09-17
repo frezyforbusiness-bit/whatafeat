@@ -3,5 +3,10 @@
   "framework": "nextjs",
   "buildCommand": "npm run build",
   "installCommand": "npm ci",
-  "regions": ["fra1"]
+  "regions": ["fra1"],
+  "build": {
+    "env": {
+      "DOCKER_BUILD": "0"
+    }
+  }
 }

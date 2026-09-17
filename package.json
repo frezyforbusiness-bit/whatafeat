@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev --port 3000",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start --port 3000",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test:domain": "node tests/domain.mjs",
