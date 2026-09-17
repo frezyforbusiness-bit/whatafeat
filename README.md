@@ -1,93 +1,76 @@
-# Whatafeat — Phase 1 prototype
+# Whatafeat — Find your next collaborator
 
-Navigable demo for independent underground artists: discover collaborators, book paid features, trade verses, and post open verses.
+Phase 1 demo (browser) + Phase 2 production foundation (Neon, Auth.js, Blob).
 
-Promise: **Find your next collaborator.**
+## Modes
 
-Product plan: [`WHATAFEAT_PLAN.md`](./WHATAFEAT_PLAN.md). UI language: English.
+| Mode | Flag | Behavior |
+|---|---|---|
+| Demo (default) | `NEXT_PUBLIC_DEMO=1` | localStorage fixtures, demo accounts, Simulate payment |
+| Production | `NEXT_PUBLIC_DEMO=0` | Neon DB, Google sign-in, Blob uploads, Paid gated |
 
-## Requirements
+Paid collaborations accept into `Awaiting payment` but **cannot activate** until `PAYMENTS_ENABLED=1` (not in 1.0).
 
-- Node.js `>=22.13.0`
-- Dependencies locked in `package-lock.json`
-
-## Local development
+## Local demo (no secrets)
 
 ```sh
-cp .env.example .env.local   # optional
+cp .env.example .env.local   # leave NEXT_PUBLIC_DEMO=1
 npm ci
 npm run dev                  # http://localhost:3000
 ```
 
+## Production 1.0 local setup
+
+1. Create a [Neon](https://neon.tech) project → copy `DATABASE_URL`
+2. Create Google OAuth credentials (Authorized redirect: `http://localhost:3000/api/auth/callback/google`)
+3. Create a [Vercel Blob](https://vercel.com/docs/storage/vercel-blob) store → `BLOB_READ_WRITE_TOKEN`
+4. Fill `.env.local`:
+
+```env
+NEXT_PUBLIC_DEMO=0
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+DATABASE_URL=postgresql://...
+AUTH_SECRET=...                 # openssl rand -base64 32
+AUTH_GOOGLE_ID=...
+AUTH_GOOGLE_SECRET=...
+BLOB_READ_WRITE_TOKEN=...
+```
+
+5. Apply schema:
+
+```sh
+npm run db:push
+# or: npm run db:generate && npm run db:migrate
+```
+
+6. `npm run dev` → Sign in with Google → onboarding → trade flow
+
+## Scripts
+
 | Command | Purpose |
 |---|---|
-| `npm run dev` | Next.js development server |
-| `npm run build` | Production build (Vercel / Docker) |
-| `npm run start` | Run the production build locally |
-| `npm run test:domain` | Domain transition scenarios |
-| `npm run typecheck` | TypeScript check |
+| `npm run dev` | Next.js dev server |
+| `npm run build` / `start` | Production build |
+| `npm run test:domain` | Domain unit scenarios |
+| `npm run typecheck` | TypeScript |
+| `npm run db:push` | Push Drizzle schema to Neon |
+| `npm run db:generate` | Generate SQL migrations |
 
-Demo accounts and fixture state live in the browser (`localStorage` key `whatafeat-demo-v1`). Use **Choose demo account** (Sora / Nilo) and **Reset demo** in Settings.
+## Deploy (Vercel)
 
-Legacy Cloudflare/vinext scripts remain as `dev:vinext` / `build:vinext` / `start:vinext` for the original Sites starter path.
+Set the same env vars in the Vercel project (`NEXT_PUBLIC_DEMO=0`). Run migrations against Neon before/after first deploy. Import [frezyforbusiness-bit/whatafeat](https://github.com/frezyforbusiness-bit/whatafeat).
 
-## Deploy on Vercel
+Optional Docker image uses `DOCKER_BUILD=1` (see `Dockerfile`). Vercel does not use the Dockerfile.
 
-1. Push this repo to GitHub (`whatafeat`).
-2. In [Vercel](https://vercel.com): **Add New Project** → import the repo.
-3. Framework Preset: **Next.js** (see `vercel.json`).
-4. Env (optional for Phase 1): copy from `.env.example` — nothing secret is required.
-5. Deploy. Open the production URL and walk the demo path.
+## Architecture (Prod)
 
-CLI alternative:
+- [`db/schema.ts`](db/schema.ts) — Postgres tables
+- [`auth.ts`](auth.ts) — Auth.js Google + Drizzle adapter
+- [`server/actions.ts`](server/actions.ts) — explicit mutations (trade active; paid gated)
+- [`server/blob.ts`](server/blob.ts) — Vercel Blob uploads
+- [`app/api/assets/[id]`](app/api/assets/[id]/route.ts) — authorized private downloads
+- [`features/app.tsx`](features/app.tsx) — UI (demo + prod)
 
-```sh
-npx vercel          # preview
-npx vercel --prod   # production
-```
+## 1.0 acceptance
 
-## Docker (optional self-host)
-
-Vercel does **not** use this Dockerfile. It is for Railway, Fly.io, or a VPS:
-
-```sh
-docker build -t whatafeat .
-docker run --rm -p 3000:3000 whatafeat
-```
-
-## What works in Phase 1
-
-- Discover, Explore, artist profiles, open verses list/detail
-- Persistent audio player with synthesized WAV demos (`public/audio/`)
-- Search + filters serialized in the URL
-- Proposals (Paid / Trade), Studio, Inbox, collaboration room
-- Simulated payment activation (`Simulate payment`)
-- Domain rules in `domain/model.ts` with tests in `tests/domain.mjs`
-
-## What is simulated / out of scope
-
-- No real authentication, payments, webhooks, or payouts
-- No server database in production yet
-- Delivery file blobs are session-only; after refresh only metadata remains
-- Permissions are enforced in client-side domain code only — **not production-safe**
-
-## Project layout
-
-```text
-app/            Next.js layout, styles, catch-all route
-features/       App shell UI + persistent player
-domain/         Models and state transitions
-mocks/          Fixtures + localStorage repository
-components/ui/  Shared UI primitives
-public/         Artwork + demo audio
-vercel.json     Vercel project settings
-Dockerfile      Optional container image
-.env.example    Documented environment variables
-```
-
-## Next steps (Phase 2+)
-
-1. Real accounts, authorization, and repository backends
-2. Object storage for demos and deliveries
-3. Keep trades live; gate Paid activation until a real payment provider exists
-4. Remove demo account / reset / simulate-payment controls from production builds
+Two real accounts: onboarding → trade proposal → accept → upload → revise/approve → completed. Paid shows “Payments coming soon”. No `localStorage` as source of truth when `NEXT_PUBLIC_DEMO=0`.

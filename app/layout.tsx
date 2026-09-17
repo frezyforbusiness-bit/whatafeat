@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import App from "@/features/app";
+import { AuthProvider } from "@/features/auth-provider";
 import { Suspense } from "react";
 
 export const metadata: Metadata = {
@@ -19,7 +19,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased"><Suspense fallback={<p>Loading Whatafeat…</p>}><App/></Suspense>{children}</body>
+      <body className="antialiased">
+        <AuthProvider>
+          <Suspense fallback={<p>Loading Whatafeat…</p>}>{children}</Suspense>
+        </AuthProvider>
+      </body>
     </html>
   );
 }
