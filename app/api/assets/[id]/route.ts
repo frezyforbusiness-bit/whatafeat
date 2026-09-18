@@ -10,6 +10,7 @@ import {
   deliveryFiles,
   artistProfiles,
 } from "@/db/schema";
+import { readPrivateAsset } from "@/server/blob";
 
 export async function GET(
   _req: NextRequest,
@@ -29,18 +30,38 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const authorised = await canRead(asset.ownerUserId, session.user.id, id);
+  if (!authorised) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
+  // Private blobs are streamed through this route. We never expose the
+  // underlying blob URL, so access cannot outlive this authorisation check.
+  const file = await readPrivateAsset(asset.pathname);
+  if (!file) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  return new NextResponse(file.stream, {
+    headers: {
+      "Content-Type": asset.mime,
+      "Content-Length": String(asset.size),
+      "Cache-Control": "private, no-store",
+      "Content-Disposition": `attachment; filename="${encodeURIComponent(
+        asset.pathname.split("/").pop() ?? "download",
+      )}"`,
+    },
+  });
+}
+
+async function canRead(ownerUserId: string, viewerUserId: string, assetId: string) {
+  if (ownerUserId === viewerUserId) return true;
+
+  const db = getDb();
   const [profile] = await db
     .select()
     .from(artistProfiles)
-    .where(eq(artistProfiles.userId, session.user.id))
+    .where(eq(artistProfiles.userId, viewerUserId))
     .limit(1);
-  if (!profile) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!profile) return false;
 
-  if (asset.ownerUserId === session.user.id) {
-    return NextResponse.redirect(asset.blobUrl);
-  }
-
-  // Participant in a collaboration that references this delivery file
+  // Readable if the viewer participates in the collaboration this file belongs to
   const rows = await db
     .select({ artistId: collaborationParticipants.artistId })
     .from(deliveryFiles)
@@ -50,11 +71,7 @@ export async function GET(
       collaborationParticipants,
       eq(contributions.collaborationId, collaborationParticipants.collaborationId),
     )
-    .where(eq(deliveryFiles.assetId, id));
+    .where(eq(deliveryFiles.assetId, assetId));
 
-  if (!rows.some((r) => r.artistId === profile.id)) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
-  return NextResponse.redirect(asset.blobUrl);
+  return rows.some((r) => r.artistId === profile.id);
 }

@@ -1,7 +1,8 @@
 export type Mode='Paid'|'Trade';
-export type Artist={id:string;slug:string;name:string;genre:string;language:string;bio:string;art:number;price:number;days:number;trade:boolean;demo:boolean};
+export type Track={id:string;title:string;url:string};
+export type Artist={id:string;slug:string;name:string;genre:string;language:string;bio:string;art:number;price:number;days:number;trade:boolean;demo:boolean;tracks?:Track[]};
 export type Offer={id:string;artist:string;title:string;mode:Mode;price:number;days:number;revisions:number;files:string;archived:boolean};
-export type Verse={id:string;owner:string;title:string;brief:string;genre:string;language:string;mode:Mode;budget:number;bpm:number;key:string;art:number;status:'Draft'|'Published'|'Closed'};
+export type Verse={id:string;owner:string;title:string;brief:string;genre:string;language:string;mode:Mode;budget:number;bpm:number;key:string;art:number;status:'Draft'|'Published'|'Closed';previewUrl?:string};
 export type Application={id:string;verse:string;artist:string;message:string;price:number;status:'Submitted'|'Shortlisted'|'Selected'|'Rejected'|'Withdrawn'};
 export type Terms={title:string;brief:string;mode:Mode;price:number;days:number;revisions:number;files:string;yourContribution:string;theirContribution:string;credits:string;rights:string;promotion:string;demoName?:string;tradeDate?:string;theirTradeDate?:string};
 export type Proposal={id:string;from:string;to:string;payer:string;performer:string;verse?:string;application?:string;terms:Terms;status:'Draft'|'Sent'|'Accepted'|'Declined'|'Withdrawn'|'Expired';created:string;expires:string};

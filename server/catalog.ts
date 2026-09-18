@@ -1,10 +1,13 @@
-"use server";
-
-import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
+// NOTE: deliberately NOT a "use server" module. These helpers read privileged
+// rows and must only be reachable from server code that has already resolved
+// the viewer from the session — never callable directly from the browser.
+import { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   applications,
   artistProfiles,
+  assets,
+  audioSamples,
   blocks,
   collaborationParticipants,
   collaborations,
@@ -17,9 +20,8 @@ import {
   proposals,
   reports,
   reviews,
-  assets,
 } from "@/db/schema";
-import type { Store } from "@/domain/model";
+import type { Store, Track } from "@/domain/model";
 import {
   mapApplication,
   mapArtist,
@@ -31,46 +33,166 @@ import {
   mapVerse,
 } from "@/server/mappers";
 
+/** Private slices collapse to empty for signed-out visitors. */
+function emptyPrivate(): Pick<
+  Store,
+  "applications" | "proposals" | "collaborations" | "messages" | "blocked" | "reports"
+> {
+  return {
+    applications: [],
+    proposals: [],
+    collaborations: [],
+    messages: [],
+    blocked: [],
+    reports: [],
+  };
+}
+
+/**
+ * Builds the client store for a viewer.
+ *
+ * Public rows (artists, published verses, active offers, reviews) are visible to
+ * everyone. Everything else is scoped to the viewer: applications they sent or
+ * received, proposals they are party to, collaborations they participate in, and
+ * the deliveries/messages hanging off those collaborations.
+ */
 export async function loadCatalogStore(viewerArtistId?: string): Promise<Store> {
   const db = getDb();
-  const [
-    artists,
-    offers,
-    verses,
-    apps,
-    props,
-    collabs,
-    msgs,
-    reviewRows,
-    reportRows,
-  ] = await Promise.all([
-    db.select().from(artistProfiles).where(eq(artistProfiles.onboardingComplete, true)),
-    db.select().from(featureOffers),
-    db.select().from(openVerses),
-    db.select().from(applications),
-    db.select().from(proposals),
-    db.select().from(collaborations),
-    db.select().from(messages).orderBy(desc(messages.createdAt)),
-    db.select().from(reviews),
-    db.select().from(reports),
+
+  const [artistRows, offerRows, verseRows, reviewRows, sampleRows, publicAssetRows] =
+    await Promise.all([
+      db.select().from(artistProfiles).where(eq(artistProfiles.onboardingComplete, true)),
+      db
+        .select()
+        .from(featureOffers)
+        .where(
+          viewerArtistId
+            ? or(eq(featureOffers.archived, false), eq(featureOffers.artistId, viewerArtistId))
+            : eq(featureOffers.archived, false),
+        ),
+      db
+        .select()
+        .from(openVerses)
+        .where(
+          viewerArtistId
+            ? or(eq(openVerses.status, "Published"), eq(openVerses.ownerId, viewerArtistId))
+            : eq(openVerses.status, "Published"),
+        ),
+      db.select().from(reviews),
+      db.select().from(audioSamples).orderBy(audioSamples.sortOrder),
+      db.select().from(assets).where(eq(assets.visibility, "public")),
+    ]);
+
+  const publicAssetById = new Map(publicAssetRows.map((a) => [a.id, a]));
+  const tracksByArtist = new Map<string, Track[]>();
+  for (const s of sampleRows) {
+    const asset = publicAssetById.get(s.assetId);
+    if (!asset) continue;
+    const list = tracksByArtist.get(s.profileId) ?? [];
+    list.push({ id: s.id, title: s.title, url: `/api/assets/${asset.id}` });
+    tracksByArtist.set(s.profileId, list);
+  }
+
+  const versePreviewUrl = (previewAssetId: string | null) => {
+    if (!previewAssetId) return undefined;
+    return publicAssetById.has(previewAssetId) ? `/api/assets/${previewAssetId}` : undefined;
+  };
+
+  const publicStore = {
+    version: 1 as const,
+    artists: artistRows.map((a) => ({ ...mapArtist(a), tracks: tracksByArtist.get(a.id) ?? [] })),
+    offers: offerRows.map(mapOffer),
+    verses: verseRows.map((v) => ({ ...mapVerse(v), previewUrl: versePreviewUrl(v.previewAssetId) })),
+    reviews: reviewRows.map((r) => ({
+      collaboration: r.collaborationId,
+      author: r.authorArtistId,
+      rating: r.rating,
+      text: r.text,
+    })),
+  };
+
+  if (!viewerArtistId) {
+    return { ...publicStore, ...emptyPrivate() };
+  }
+
+  // --- Viewer-scoped private data ---------------------------------------
+  const myVerseIds = verseRows.filter((v) => v.ownerId === viewerArtistId).map((v) => v.id);
+
+  const participantRows = await db
+    .select()
+    .from(collaborationParticipants)
+    .where(eq(collaborationParticipants.artistId, viewerArtistId));
+  const myCollabIds = participantRows.map((p) => p.collaborationId);
+
+  const [appRows, proposalRows, collabRows, blockRows, reportRows] = await Promise.all([
+    db
+      .select()
+      .from(applications)
+      .where(
+        myVerseIds.length
+          ? or(
+              eq(applications.artistId, viewerArtistId),
+              inArray(applications.verseId, myVerseIds),
+            )
+          : eq(applications.artistId, viewerArtistId),
+      ),
+    db
+      .select()
+      .from(proposals)
+      .where(
+        or(
+          eq(proposals.fromArtistId, viewerArtistId),
+          eq(proposals.toArtistId, viewerArtistId),
+        ),
+      ),
+    myCollabIds.length
+      ? db.select().from(collaborations).where(inArray(collaborations.id, myCollabIds))
+      : Promise.resolve([]),
+    db.select().from(blocks).where(eq(blocks.blockerArtistId, viewerArtistId)),
+    db.select().from(reports).where(eq(reports.authorArtistId, viewerArtistId)),
   ]);
 
-  const contribRows = await db.select().from(contributions);
-  const deliveryRows = await db.select().from(deliveries);
-  const fileRows = await db.select().from(deliveryFiles);
-  const assetRows = await db.select().from(assets);
-  const participantRows = await db.select().from(collaborationParticipants);
-  const blockRows = viewerArtistId
-    ? await db.select().from(blocks).where(eq(blocks.blockerArtistId, viewerArtistId))
-    : [];
+  const myProposalIds = proposalRows.map((p) => p.id);
+  const [msgRows, allParticipantRows, contribRows] = await Promise.all([
+    myProposalIds.length
+      ? db
+          .select()
+          .from(messages)
+          .where(inArray(messages.proposalId, myProposalIds))
+          .orderBy(desc(messages.createdAt))
+      : Promise.resolve([]),
+    myCollabIds.length
+      ? db
+          .select()
+          .from(collaborationParticipants)
+          .where(inArray(collaborationParticipants.collaborationId, myCollabIds))
+      : Promise.resolve([]),
+    myCollabIds.length
+      ? db.select().from(contributions).where(inArray(contributions.collaborationId, myCollabIds))
+      : Promise.resolve([]),
+  ]);
 
-  const assetById = new Map(assetRows.map((a) => [a.id, a]));
+  const contribIds = contribRows.map((c) => c.id);
+  const deliveryRows = contribIds.length
+    ? await db.select().from(deliveries).where(inArray(deliveries.contributionId, contribIds))
+    : [];
+  const deliveryIds = deliveryRows.map((d) => d.id);
+  const fileRows = deliveryIds.length
+    ? await db.select().from(deliveryFiles).where(inArray(deliveryFiles.deliveryId, deliveryIds))
+    : [];
+  const deliveryAssetIds = fileRows.map((f) => f.assetId);
+  const deliveryAssetRows = deliveryAssetIds.length
+    ? await db.select().from(assets).where(inArray(assets.id, deliveryAssetIds))
+    : [];
+  const assetById = new Map(deliveryAssetRows.map((a) => [a.id, a]));
+
   const filesByDelivery = new Map<string, typeof fileRows>();
   for (const f of fileRows) {
     const list = filesByDelivery.get(f.deliveryId) ?? [];
     list.push(f);
     filesByDelivery.set(f.deliveryId, list);
   }
+
   const deliveriesByContrib = new Map<
     string,
     {
@@ -112,34 +234,25 @@ export async function loadCatalogStore(viewerArtistId?: string): Promise<Store> 
   }
 
   const partsByCollab = new Map<string, string[]>();
-  for (const p of participantRows) {
+  for (const p of allParticipantRows) {
     const list = partsByCollab.get(p.collaborationId) ?? [];
     list.push(p.artistId);
     partsByCollab.set(p.collaborationId, list);
   }
 
   return {
-    version: 1,
-    artists: artists.map(mapArtist),
-    offers: offers.map(mapOffer),
-    verses: verses.map(mapVerse),
-    applications: apps.map(mapApplication),
-    proposals: props.map(mapProposal),
-    collaborations: collabs.map((c) =>
+    ...publicStore,
+    applications: appRows.map(mapApplication),
+    proposals: proposalRows.map(mapProposal),
+    collaborations: collabRows.map((c) =>
       mapCollaboration(c, partsByCollab.get(c.id) ?? [], contribsByCollab.get(c.id) ?? []),
     ),
-    messages: msgs.map(mapMessage),
+    messages: msgRows.map(mapMessage),
     blocked: blockRows.map((b) => b.blockedArtistId),
     reports: reportRows.map((r) => ({
       target: r.target,
       reason: r.reason,
       author: r.authorArtistId,
-    })),
-    reviews: reviewRows.map((r) => ({
-      collaboration: r.collaborationId,
-      author: r.authorArtistId,
-      rating: r.rating,
-      text: r.text,
     })),
   };
 }
