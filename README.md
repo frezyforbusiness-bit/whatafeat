@@ -9,7 +9,37 @@ Phase 1 demo (browser) + Phase 2 production foundation (Neon, Auth.js, Blob).
 | Demo (default) | `NEXT_PUBLIC_DEMO=1` | localStorage fixtures, demo accounts, Simulate payment |
 | Production | `NEXT_PUBLIC_DEMO=0` | Neon DB, Google sign-in, Blob uploads, Paid gated |
 
-Paid collaborations accept into `Awaiting payment` but **cannot activate** until `PAYMENTS_ENABLED=1` (not in 1.0).
+Paid collaborations accept into `Awaiting payment` and stay there until Stripe is
+configured: they need `PAYMENTS_ENABLED=1` **and** both `STRIPE_SECRET_KEY` and
+`STRIPE_WEBHOOK_SECRET`. The client never decides this — availability comes from
+the server bootstrap.
+
+## Payments (Stripe Connect, escrow)
+
+Money moves between two users, so the platform uses Connect Express accounts and
+holds funds until the work is approved:
+
+1. The performer completes Connect onboarding from **Settings → Getting paid**.
+   Offers cannot be paid out before `stripe_payouts_enabled` is true.
+2. The payer opens Checkout. The charge lands on the **platform** account with a
+   `transfer_group` — deliberately no `transfer_data`, so nothing reaches the
+   performer yet.
+3. `checkout.session.completed` arrives at `/api/stripe/webhook`, which flips the
+   collaboration to `Active` and starts the delivery clock. Activation only ever
+   happens here, so closing the tab after paying is safe.
+4. When the recipient approves the delivery, the collaboration completes and the
+   escrow is transferred to the performer minus `PLATFORM_FEE_BPS`.
+5. A cancellation agreed before release refunds the payer. After release it is
+   refused.
+
+Every webhook is claimed once via the `stripe_events` table, and the Stripe calls
+use idempotency keys, so retries cannot double-charge or double-pay.
+
+Local webhook testing:
+
+```bash
+stripe listen --forward-to localhost:3000/api/stripe/webhook
+```
 
 ## Local demo (no secrets)
 
@@ -73,4 +103,8 @@ Optional Docker image uses `DOCKER_BUILD=1` (see `Dockerfile`). Vercel does not 
 
 ## 1.0 acceptance
 
-Two real accounts: onboarding → trade proposal → accept → upload → revise/approve → completed. Paid shows “Payments coming soon”. No `localStorage` as source of truth when `NEXT_PUBLIC_DEMO=0`.
+Two real accounts: onboarding → trade proposal → accept → upload → revise/approve → completed. Paid shows “Payments coming soon” while Stripe is unconfigured. No `localStorage` as source of truth when `NEXT_PUBLIC_DEMO=0`.
+
+With Stripe test keys, the paid path adds: payout onboarding → Checkout (card
+`4242 4242 4242 4242`) → webhook activation → approval → transfer, verified in the
+Stripe dashboard.

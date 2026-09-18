@@ -112,6 +112,10 @@ export const artistProfiles = pgTable(
     avatarAssetId: uuid("avatar_asset_id"),
     artIndex: integer("art_index").notNull().default(0),
     onboardingComplete: boolean("onboarding_complete").notNull().default(false),
+    /** Stripe Connect Express account that receives payouts for paid work. */
+    stripeAccountId: text("stripe_account_id"),
+    /** Mirrors charges_enabled && payouts_enabled from account.updated. */
+    stripePayoutsEnabled: boolean("stripe_payouts_enabled").notNull().default(false),
     createdAt: timestamp("created_at", { mode: "date" }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { mode: "date" }).defaultNow().notNull(),
   },
@@ -234,8 +238,36 @@ export const collaborations = pgTable(
     status: collaborationStatusEnum("status").notNull(),
     cancelByArtistId: uuid("cancel_by_artist_id").references(() => artistProfiles.id),
     acceptedAt: timestamp("accepted_at", { mode: "date" }).defaultNow().notNull(),
+
+    // --- Escrow payment state (Stripe Connect) ---
+    /** Amount the payer owes, frozen at acceptance so later edits cannot move it. */
+    amountCents: integer("amount_cents").notNull().default(0),
+    /** Platform commission withheld from the transfer to the performer. */
+    platformFeeCents: integer("platform_fee_cents").notNull().default(0),
+    stripeCheckoutSessionId: text("stripe_checkout_session_id"),
+    stripePaymentIntentId: text("stripe_payment_intent_id"),
+    /** Ties the charge and the later payout together for reconciliation. */
+    stripeTransferGroup: text("stripe_transfer_group"),
+    /** Set by the webhook, not by the browser. */
+    paidAt: timestamp("paid_at", { mode: "date" }),
+    /** Written when the approved work is released from escrow. */
+    stripeTransferId: text("stripe_transfer_id"),
+    releasedAt: timestamp("released_at", { mode: "date" }),
+    stripeRefundId: text("stripe_refund_id"),
+    refundedAt: timestamp("refunded_at", { mode: "date" }),
   },
+  (t) => [uniqueIndex("collab_checkout_session_uidx").on(t.stripeCheckoutSessionId)],
 );
+
+/**
+ * Processed Stripe webhook ids. Stripe retries deliveries, so every handler
+ * inserts here first and bails out if the row already exists.
+ */
+export const stripeEvents = pgTable("stripe_events", {
+  id: text("id").primaryKey(),
+  type: text("type").notNull(),
+  receivedAt: timestamp("received_at", { mode: "date" }).defaultNow().notNull(),
+});
 
 export const collaborationParticipants = pgTable(
   "collaboration_participants",

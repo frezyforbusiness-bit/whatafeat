@@ -29,6 +29,14 @@ import {
   assertDemoFile,
   recordAsset,
 } from "@/server/blob";
+import {
+  createCheckoutSession,
+  ensureConnectAccount,
+  refundCollaboration,
+  releaseEscrow,
+  syncConnectStatus,
+} from "@/server/payments";
+import { stripeConfigured } from "@/server/stripe";
 import { requireArtist, requireOnboardedArtist } from "@/server/session";
 import { loadCatalogStore } from "@/server/catalog";
 import {
@@ -106,12 +114,27 @@ export async function getProdBootstrap() {
   const artistId = session?.user?.artistId;
   await expireStaleProposals();
   const store = await loadCatalogStore(artistId);
+
+  // Whether this artist can currently receive money, so the UI can prompt for
+  // Connect onboarding before they publish paid offers.
+  let payoutsEnabled = false;
+  if (artistId) {
+    const db = getDb();
+    const [profile] = await db
+      .select({ enabled: artistProfiles.stripePayoutsEnabled })
+      .from(artistProfiles)
+      .where(eq(artistProfiles.id, artistId))
+      .limit(1);
+    payoutsEnabled = profile?.enabled ?? false;
+  }
+
   return {
     store,
     account: artistId ?? null,
     onboardingComplete: session?.user?.onboardingComplete ?? false,
     userEmail: session?.user?.email ?? null,
-    paymentsEnabled: paymentsEnabled(),
+    paymentsEnabled: paymentsEnabled() && stripeConfigured(),
+    payoutsEnabled,
   };
 }
 
@@ -537,6 +560,8 @@ export async function transitionProposalAction(proposalId: string, action: unkno
         payerArtistId: p.payerArtistId,
         agreement: terms,
         status,
+        // Frozen at acceptance so later offer edits cannot change what is owed.
+        amountCents: terms.mode === "Paid" ? terms.price : 0,
       })
       .returning();
 
@@ -575,11 +600,37 @@ export async function transitionProposalAction(proposalId: string, action: unkno
   revalidateApp();
 }
 
-export async function activatePaymentAction(_collaborationId: string) {
+/**
+ * Opens Stripe Checkout for a paid collaboration.
+ *
+ * Returns a redirect URL only. The collaboration is flipped to Active by the
+ * webhook, never here, so closing the tab after paying still activates the work.
+ */
+export async function activatePaymentAction(collaborationId: string) {
   if (!paymentsEnabled()) {
     throw new Error("Payments are not available yet. Trades work without payment.");
   }
-  throw new Error("Payment provider is not configured.");
+  if (!stripeConfigured()) throw new Error("Payment provider is not configured.");
+  const { profile } = await requireOnboardedArtist();
+  return createCheckoutSession(collaborationId, profile.id);
+}
+
+/** Starts or resumes Stripe Connect onboarding for the signed-in artist. */
+export async function startPayoutOnboarding() {
+  if (!stripeConfigured()) throw new Error("Payment provider is not configured.");
+  const { profile, session } = await requireOnboardedArtist();
+  const { url } = await ensureConnectAccount(profile.id, session.user.email ?? null);
+  revalidateApp();
+  return { url };
+}
+
+/** Refreshes the cached Connect capability after the artist returns from Stripe. */
+export async function refreshPayoutStatus() {
+  if (!stripeConfigured()) return { payoutsEnabled: false };
+  const { profile } = await requireOnboardedArtist();
+  const result = await syncConnectStatus(profile.id);
+  revalidateApp();
+  return result;
 }
 
 export async function contributionActionServer(input: unknown) {
@@ -608,6 +659,7 @@ export async function contributionActionServer(input: unknown) {
     }
   }
 
+  let completed = false;
   await db.transaction(async (tx) => {
     // Serialise everything touching this collaboration. Without it, two
     // approvals landing together each read the other contribution as not-yet
@@ -713,8 +765,19 @@ export async function contributionActionServer(input: unknown) {
         .update(collaborations)
         .set({ status: "Completed" })
         .where(eq(collaborations.id, c.id));
+      completed = true;
     }
   });
+
+  // Escrow is released after the transaction commits: a Stripe outage must not
+  // roll back an approval the recipient already made.
+  if (completed && stripeConfigured()) {
+    try {
+      await releaseEscrow(data.collaborationId);
+    } catch (error) {
+      console.error("Escrow release failed", data.collaborationId, error);
+    }
+  }
 
   revalidateApp();
 }
@@ -723,6 +786,7 @@ export async function cancelCollaborationAction(collaborationId: string) {
   const { profile } = await requireOnboardedArtist();
   const db = getDb();
 
+  let cancelled = false;
   await db.transaction(async (tx) => {
     await lockRow(tx, "collaborations", collaborationId);
     const [c] = await tx
@@ -737,17 +801,22 @@ export async function cancelCollaborationAction(collaborationId: string) {
       .where(eq(collaborationParticipants.collaborationId, c.id));
     if (!parts.some((p) => p.artistId === profile.id)) throw new Error("Access denied.");
 
+    // Money already released to the performer cannot be unwound here.
+    if (c.stripeTransferId) throw new Error("This work was already paid out.");
+
     if (c.status === "Awaiting payment") {
       if (c.payerArtistId !== profile.id) {
         throw new Error("Only the payer can cancel before activation.");
       }
       await tx.update(collaborations).set({ status: "Cancelled" }).where(eq(collaborations.id, c.id));
+      cancelled = true;
     } else if (c.status === "Active") {
       if (c.cancelByArtistId && c.cancelByArtistId !== profile.id) {
         await tx
           .update(collaborations)
           .set({ status: "Cancelled" })
           .where(eq(collaborations.id, c.id));
+        cancelled = true;
       } else {
         await tx
           .update(collaborations)
@@ -758,6 +827,15 @@ export async function cancelCollaborationAction(collaborationId: string) {
       throw new Error("This work cannot be cancelled.");
     }
   });
+
+  // Refund escrow once the cancellation is agreed and committed.
+  if (cancelled && stripeConfigured()) {
+    try {
+      await refundCollaboration(collaborationId);
+    } catch (error) {
+      console.error("Refund failed", collaborationId, error);
+    }
+  }
 
   revalidateApp();
 }
