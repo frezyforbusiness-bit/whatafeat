@@ -15,6 +15,13 @@
       "when": 1789718790976,
       "tag": "0001_keen_natasha_romanoff",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789725773116,
+      "tag": "0002_slimy_titania",
+      "breakpoints": true
     }
   ]
 }

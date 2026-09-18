@@ -27,11 +27,15 @@ import { paymentsEnabled } from "@/lib/flags";
 import {
   assertDeliveryFile,
   assertDemoFile,
+  assertOwnedBlobPath,
   recordAsset,
 } from "@/server/blob";
 import {
   createCheckoutSession,
+  enqueueRefund,
+  enqueueRelease,
   ensureConnectAccount,
+  expireOpenCheckout,
   refundCollaboration,
   releaseEscrow,
   syncConnectStatus,
@@ -69,21 +73,14 @@ const toCents = (euros: number) => Math.round(euros * 100);
 async function expireStaleProposals() {
   const db = getDb();
   await db.transaction(async (tx) => {
+    // Atomic status flip: only Sent rows become Expired, so a concurrent accept
+    // that already moved the row cannot be overwritten by the expirer.
     const stale = await tx
-      .select({ id: proposals.id, applicationId: proposals.applicationId })
-      .from(proposals)
-      .where(and(eq(proposals.status, "Sent"), sql`${proposals.expiresAt} <= now()`));
-    if (!stale.length) return;
-
-    await tx
       .update(proposals)
       .set({ status: "Expired" })
-      .where(
-        inArray(
-          proposals.id,
-          stale.map((s) => s.id),
-        ),
-      );
+      .where(and(eq(proposals.status, "Sent"), sql`${proposals.expiresAt} <= now()`))
+      .returning({ id: proposals.id, applicationId: proposals.applicationId });
+    if (!stale.length) return;
 
     const appIds = stale.map((s) => s.applicationId).filter((x): x is string => !!x);
     if (appIds.length) {
@@ -98,13 +95,15 @@ async function expireStaleProposals() {
 /** Serialises concurrent writers on one row for the rest of the transaction. */
 async function lockRow(
   tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
-  table: "collaborations" | "open_verses",
+  table: "collaborations" | "open_verses" | "proposals",
   id: string,
 ) {
   const query =
     table === "collaborations"
       ? sql`select id from collaborations where id = ${id} for update`
-      : sql`select id from open_verses where id = ${id} for update`;
+      : table === "open_verses"
+        ? sql`select id from open_verses where id = ${id} for update`
+        : sql`select id from proposals where id = ${id} for update`;
   await tx.execute(query);
 }
 
@@ -172,20 +171,19 @@ export async function updateProfile(input: unknown) {
 /**
  * Records a profile demo that the browser already uploaded straight to Blob.
  *
- * Size and MIME come from `head()` rather than the client, so a caller cannot
- * understate a file to slip past the limits.
+ * Ownership and size/MIME come from Blob `head()`, never from a parallel client
+ * pathname field — otherwise a caller who knows another object's URL could
+ * register it under their own prefix.
  */
 export async function recordProfileDemo(input: { pathname: string; url: string; name: string }) {
   const { session, profile } = await requireOnboardedArtist();
-  const expectedPrefix = `demos/${session.user.id}/`;
-  if (!input.pathname.startsWith(expectedPrefix)) throw new Error("Invalid upload.");
-
   const meta = await head(input.url);
+  assertOwnedBlobPath(meta, { userId: session.user.id, kind: "demo" });
   assertDemoFile(meta.contentType ?? "", meta.size);
 
   const asset = await recordAsset({
     userId: session.user.id,
-    blobUrl: input.url,
+    blobUrl: meta.url ?? input.url,
     pathname: meta.pathname,
     mime: meta.contentType ?? "application/octet-stream",
     size: meta.size,
@@ -255,6 +253,20 @@ export async function saveOpenVerse(input: unknown) {
     throw new Error("Add a profile demo before publishing.");
   }
   const db = getDb();
+
+  // Prefer an explicit profile demo as the verse preview so Live never falls
+  // back to a synthetic WAV for published announcements.
+  let previewAssetId: string | null = null;
+  if (data.status === "Published") {
+    const [sample] = await db
+      .select({ assetId: audioSamples.assetId })
+      .from(audioSamples)
+      .where(eq(audioSamples.profileId, profile.id))
+      .orderBy(audioSamples.sortOrder)
+      .limit(1);
+    previewAssetId = sample?.assetId ?? null;
+  }
+
   const values = {
     title: data.title,
     brief: data.brief,
@@ -264,6 +276,7 @@ export async function saveOpenVerse(input: unknown) {
     budgetCents: data.mode === "Paid" ? toCents(data.price) : 0,
     bpm: data.bpm,
     key: data.key,
+    ...(previewAssetId ? { previewAssetId } : {}),
   };
   if (data.id) {
     const [existing] = await db
@@ -461,6 +474,10 @@ export async function transitionProposalAction(proposalId: string, action: unkno
   await expireStaleProposals();
 
   await db.transaction(async (tx) => {
+    // Lock the proposal itself before any read-modify-write so accept and
+    // withdraw cannot both observe Sent and both succeed.
+    await lockRow(tx, "proposals", proposalId);
+
     const [p] = await tx.select().from(proposals).where(eq(proposals.id, proposalId)).limit(1);
     if (!p) throw new Error("Proposal not found.");
     if (p.status === "Expired" || p.expiresAt.getTime() <= Date.now()) {
@@ -470,7 +487,12 @@ export async function transitionProposalAction(proposalId: string, action: unkno
 
     if (next === "Withdrawn") {
       if (p.fromArtistId !== profile.id) throw new Error("Only the sender can withdraw.");
-      await tx.update(proposals).set({ status: "Withdrawn" }).where(eq(proposals.id, proposalId));
+      const withdrawn = await tx
+        .update(proposals)
+        .set({ status: "Withdrawn" })
+        .where(and(eq(proposals.id, proposalId), eq(proposals.status, "Sent")))
+        .returning({ id: proposals.id });
+      if (!withdrawn.length) throw new Error("This proposal is no longer pending.");
       if (p.applicationId) {
         await tx
           .update(applications)
@@ -483,7 +505,12 @@ export async function transitionProposalAction(proposalId: string, action: unkno
     if (p.toArtistId !== profile.id) throw new Error("Only the recipient can do this.");
 
     if (next === "Declined") {
-      await tx.update(proposals).set({ status: "Declined" }).where(eq(proposals.id, proposalId));
+      const declined = await tx
+        .update(proposals)
+        .set({ status: "Declined" })
+        .where(and(eq(proposals.id, proposalId), eq(proposals.status, "Sent")))
+        .returning({ id: proposals.id });
+      if (!declined.length) throw new Error("This proposal is no longer pending.");
       if (p.applicationId) {
         await tx
           .update(applications)
@@ -553,6 +580,15 @@ export async function transitionProposalAction(proposalId: string, action: unkno
 
     const status = terms.mode === "Paid" ? ("Awaiting payment" as const) : ("Active" as const);
 
+    // Flip Sent → Accepted before inserting the collab so a concurrent withdraw
+    // blocked on the proposal lock sees Accepted and aborts.
+    const accepted = await tx
+      .update(proposals)
+      .set({ status: "Accepted" })
+      .where(and(eq(proposals.id, proposalId), eq(proposals.status, "Sent")))
+      .returning({ id: proposals.id });
+    if (!accepted.length) throw new Error("This proposal is no longer pending.");
+
     const [collab] = await tx
       .insert(collaborations)
       .values({
@@ -594,7 +630,6 @@ export async function transitionProposalAction(proposalId: string, action: unkno
       });
     }
     await tx.insert(contributions).values(contribs);
-    await tx.update(proposals).set({ status: "Accepted" }).where(eq(proposals.id, proposalId));
   });
 
   revalidateApp();
@@ -639,19 +674,19 @@ export async function contributionActionServer(input: unknown) {
   const db = getDb();
 
   // Deliveries upload straight to Blob, so verify each file against authoritative
-  // metadata before we open the transaction.
+  // metadata before we open the transaction. Ownership is the Blob pathname —
+  // never a parallel client field that could claim someone else's object.
   const verified: { pathname: string; url: string; name: string; mime: string; size: number }[] = [];
   if (data.action === "deliver") {
     const uploads = data.uploads ?? [];
     if (!uploads.length) throw new Error("Attach at least one audio or ZIP file.");
-    const expectedPrefix = `deliveries/${session.user.id}/`;
     for (const u of uploads) {
-      if (!u.pathname.startsWith(expectedPrefix)) throw new Error("Invalid upload.");
       const meta = await head(u.url);
+      assertOwnedBlobPath(meta, { userId: session.user.id, kind: "delivery" });
       assertDeliveryFile(u.name, meta.contentType ?? "", meta.size);
       verified.push({
         pathname: meta.pathname,
-        url: u.url,
+        url: meta.url ?? u.url,
         name: u.name,
         mime: meta.contentType ?? "application/octet-stream",
         size: meta.size,
@@ -770,12 +805,14 @@ export async function contributionActionServer(input: unknown) {
   });
 
   // Escrow is released after the transaction commits: a Stripe outage must not
-  // roll back an approval the recipient already made.
+  // roll back an approval the recipient already made. The outbox survives that
+  // outage so a reconcile pass can finish the transfer later.
   if (completed && stripeConfigured()) {
+    await enqueueRelease(data.collaborationId);
     try {
       await releaseEscrow(data.collaborationId);
     } catch (error) {
-      console.error("Escrow release failed", data.collaborationId, error);
+      console.error("Escrow release deferred", data.collaborationId, error);
     }
   }
 
@@ -787,6 +824,8 @@ export async function cancelCollaborationAction(collaborationId: string) {
   const db = getDb();
 
   let cancelled = false;
+  let wasAwaitingPayment = false;
+  let needsRefund = false;
   await db.transaction(async (tx) => {
     await lockRow(tx, "collaborations", collaborationId);
     const [c] = await tx
@@ -802,14 +841,19 @@ export async function cancelCollaborationAction(collaborationId: string) {
     if (!parts.some((p) => p.artistId === profile.id)) throw new Error("Access denied.");
 
     // Money already released to the performer cannot be unwound here.
-    if (c.stripeTransferId) throw new Error("This work was already paid out.");
+    if (c.stripeTransferId || c.settlementStatus === "released") {
+      throw new Error("This work was already paid out.");
+    }
 
     if (c.status === "Awaiting payment") {
       if (c.payerArtistId !== profile.id) {
         throw new Error("Only the payer can cancel before activation.");
       }
+      wasAwaitingPayment = true;
       await tx.update(collaborations).set({ status: "Cancelled" }).where(eq(collaborations.id, c.id));
       cancelled = true;
+      // Late webhook may still arrive; if money was already recorded, refund.
+      if (c.paidAt && !c.refundedAt) needsRefund = true;
     } else if (c.status === "Active") {
       if (c.cancelByArtistId && c.cancelByArtistId !== profile.id) {
         await tx
@@ -817,6 +861,7 @@ export async function cancelCollaborationAction(collaborationId: string) {
           .set({ status: "Cancelled" })
           .where(eq(collaborations.id, c.id));
         cancelled = true;
+        if (c.paidAt && !c.refundedAt) needsRefund = true;
       } else {
         await tx
           .update(collaborations)
@@ -828,12 +873,22 @@ export async function cancelCollaborationAction(collaborationId: string) {
     }
   });
 
-  // Refund escrow once the cancellation is agreed and committed.
-  if (cancelled && stripeConfigured()) {
+  if (wasAwaitingPayment && stripeConfigured()) {
+    try {
+      await expireOpenCheckout(collaborationId);
+    } catch (error) {
+      console.error("Checkout expire failed", collaborationId, error);
+    }
+  }
+
+  // Refund escrow once the cancellation is agreed and committed. Failures leave
+  // refund_pending for the reconcile outbox.
+  if (cancelled && needsRefund && stripeConfigured()) {
+    await enqueueRefund(collaborationId);
     try {
       await refundCollaboration(collaborationId);
     } catch (error) {
-      console.error("Refund failed", collaborationId, error);
+      console.error("Refund deferred", collaborationId, error);
     }
   }
 
@@ -906,9 +961,12 @@ export async function leaveReviewAction(input: unknown) {
     .from(collaborationParticipants)
     .where(eq(collaborationParticipants.collaborationId, c.id));
   if (!parts.some((p) => p.artistId === profile.id)) throw new Error("Access denied.");
+  const subject = parts.find((p) => p.artistId !== profile.id);
+  if (!subject) throw new Error("This review is not available.");
   await db.insert(reviews).values({
     collaborationId: c.id,
     authorArtistId: profile.id,
+    subjectArtistId: subject.artistId,
     rating: data.rating,
     text: data.text,
   });

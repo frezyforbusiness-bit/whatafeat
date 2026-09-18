@@ -108,6 +108,21 @@ export async function recordAsset(input: {
 }
 
 /**
+ * Ownership comes from Blob's own pathname, never from a parallel client field.
+ * A caller who knows another object's URL cannot claim it by sending their own
+ * prefix in a separate `pathname` argument.
+ */
+export function assertOwnedBlobPath(
+  meta: { pathname: string },
+  opts: { userId: string; kind: "demo" | "delivery" },
+) {
+  const prefix = opts.kind === "demo" ? `demos/${opts.userId}/` : `deliveries/${opts.userId}/`;
+  if (!meta.pathname.startsWith(prefix)) {
+    throw new Error("Invalid upload.");
+  }
+}
+
+/**
  * Streams a private blob's bytes. The caller must have already authorised the
  * viewer: private blob URLs are never handed to the browser, so this is the only
  * way the content can be read.

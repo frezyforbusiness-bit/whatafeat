@@ -42,6 +42,20 @@ export const contributionStatusEnum = pgEnum("contribution_status", [
   "Approved",
 ]);
 export const assetVisibilityEnum = pgEnum("asset_visibility", ["public", "private"]);
+/** Escrow money movement that must survive Stripe outages and process crashes. */
+export const settlementStatusEnum = pgEnum("settlement_status", [
+  "none",
+  "release_pending",
+  "refund_pending",
+  "released",
+  "refunded",
+]);
+/** Webhook delivery lifecycle — existence of the id alone is not proof of success. */
+export const stripeEventStatusEnum = pgEnum("stripe_event_status", [
+  "processing",
+  "completed",
+  "failed",
+]);
 
 /** Auth.js / NextAuth tables */
 export const users = pgTable("users", {
@@ -255,18 +269,32 @@ export const collaborations = pgTable(
     releasedAt: timestamp("released_at", { mode: "date" }),
     stripeRefundId: text("stripe_refund_id"),
     refundedAt: timestamp("refunded_at", { mode: "date" }),
+    /**
+     * Separate from collaboration status: Completed/Cancelled can land before
+     * Stripe succeeds, and this column drives recoverable retries.
+     */
+    settlementStatus: settlementStatusEnum("settlement_status").notNull().default("none"),
+    settlementAttempts: integer("settlement_attempts").notNull().default(0),
+    settlementLastError: text("settlement_last_error"),
+    settlementNextAttemptAt: timestamp("settlement_next_attempt_at", { mode: "date" }),
   },
   (t) => [uniqueIndex("collab_checkout_session_uidx").on(t.stripeCheckoutSessionId)],
 );
 
 /**
- * Processed Stripe webhook ids. Stripe retries deliveries, so every handler
- * inserts here first and bails out if the row already exists.
+ * Stripe webhook claims. status=completed is the only proof the handler finished;
+ * a crashed worker leaves status=processing until the lease expires and a retry
+ * reclaims the row.
  */
 export const stripeEvents = pgTable("stripe_events", {
   id: text("id").primaryKey(),
   type: text("type").notNull(),
+  status: stripeEventStatusEnum("status").notNull().default("processing"),
   receivedAt: timestamp("received_at", { mode: "date" }).defaultNow().notNull(),
+  leaseUntil: timestamp("lease_until", { mode: "date" }),
+  completedAt: timestamp("completed_at", { mode: "date" }),
+  attempts: integer("attempts").notNull().default(1),
+  lastError: text("last_error"),
 });
 
 export const collaborationParticipants = pgTable(
@@ -367,6 +395,10 @@ export const reviews = pgTable(
       .notNull()
       .references(() => collaborations.id, { onDelete: "cascade" }),
     authorArtistId: uuid("author_artist_id")
+      .notNull()
+      .references(() => artistProfiles.id, { onDelete: "cascade" }),
+    /** Public profile subject — denormalised so visitors need no private collab row. */
+    subjectArtistId: uuid("subject_artist_id")
       .notNull()
       .references(() => artistProfiles.id, { onDelete: "cascade" }),
     rating: integer("rating").notNull(),

@@ -10,7 +10,7 @@ export type Delivery={id:string;version:number;at:string;author:string;notes:str
 export type Contribution={id:string;performer:string;recipient:string;obligation:string;status:'Pending'|'Delivered'|'Revision requested'|'Approved';revisions:number;deadline?:string;deliveries:Delivery[]};
 export type Collaboration={id:string;proposal:string;participants:string[];payer:string;agreement:Terms;accepted:string;status:'Awaiting payment'|'Active'|'Completed'|'Cancelled';cancelBy?:string;contributions:Contribution[]};
 export type Message={id:string;proposal:string;author:string;text:string;at:string};
-export type Store={version:1;artists:Artist[];offers:Offer[];verses:Verse[];applications:Application[];proposals:Proposal[];collaborations:Collaboration[];messages:Message[];blocked:string[];reports:{target:string;reason:string;author:string}[];reviews:{collaboration:string;author:string;rating:number;text:string}[]};
+export type Store={version:1;artists:Artist[];offers:Offer[];verses:Verse[];applications:Application[];proposals:Proposal[];collaborations:Collaboration[];messages:Message[];blocked:string[];reports:{target:string;reason:string;author:string}[];reviews:{collaboration:string;author:string;subject:string;rating:number;text:string}[]};
 export const uid=()=>globalThis.crypto?.randomUUID?.()??`${Date.now()}-${Math.random()}`;
 export const money=(n:number)=>new Intl.NumberFormat('en',{style:'currency',currency:'EUR',minimumFractionDigits:n%100?2:0,maximumFractionDigits:2}).format(n/100);
 const check=(ok:unknown,msg:string)=>{if(!ok)throw new Error(msg)};

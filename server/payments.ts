@@ -1,6 +1,6 @@
 // Server-only payment helpers. Imported by Server Actions and the Stripe
 // webhook; never reachable directly from the browser.
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, lt, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import {
   artistProfiles,
@@ -11,7 +11,7 @@ import {
 import type { Terms } from "@/domain/model";
 import { appUrl, getStripe, platformFeeCents } from "@/server/stripe";
 
-type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0];
+const MAX_SETTLEMENT_ATTEMPTS = 25;
 
 /**
  * Creates (or reuses) the performer's Connect Express account and returns an
@@ -77,6 +77,9 @@ export async function syncConnectStatus(profileId: string) {
  * The charge lands on the platform account — no `transfer_data` — so the money
  * is held until the delivery is approved. Only the returned URL goes back to the
  * browser; the collaboration stays "Awaiting payment" until the webhook fires.
+ *
+ * Card-only: async methods would leave the collab stuck until a second event,
+ * which we handle but do not advertise.
  */
 export async function createCheckoutSession(collaborationId: string, payerProfileId: string) {
   const db = getDb();
@@ -106,6 +109,8 @@ export async function createCheckoutSession(collaborationId: string, payerProfil
   const session = await stripe.checkout.sessions.create(
     {
       mode: "payment",
+      // Restrict to sync methods so activation does not depend on a second event.
+      payment_method_types: ["card"],
       client_reference_id: c.id,
       success_url: `${appUrl()}/collaborations/${c.id}?paid=1`,
       cancel_url: `${appUrl()}/collaborations/${c.id}?paid=0`,
@@ -142,15 +147,37 @@ export async function createCheckoutSession(collaborationId: string, payerProfil
   return { url: session.url };
 }
 
+/** Best-effort close of an open Checkout after the collab is cancelled unpaid. */
+export async function expireOpenCheckout(collaborationId: string) {
+  const db = getDb();
+  const [c] = await db
+    .select()
+    .from(collaborations)
+    .where(eq(collaborations.id, collaborationId))
+    .limit(1);
+  if (!c?.stripeCheckoutSessionId || c.paidAt) return;
+  try {
+    await getStripe().checkout.sessions.expire(c.stripeCheckoutSessionId);
+  } catch (error) {
+    // Already complete / expired: the webhook path handles late money.
+    console.warn("Checkout expire skipped", collaborationId, (error as Error).message);
+  }
+}
+
 /**
- * Webhook side of activation. Idempotent: a replayed event finds paidAt already
- * set and returns without touching anything.
+ * Webhook side of payment confirmation. Idempotent.
+ *
+ * - Awaiting payment → Active + start the delivery clock.
+ * - Cancelled (or any non-activatable state) with a late charge → record the
+ *   PaymentIntent and enqueue a recoverable refund. Never silently drop money.
  */
 export async function markCollaborationPaid(input: {
   collaborationId: string;
   paymentIntentId: string;
 }) {
   const db = getDb();
+  let enqueueRefund = false;
+
   await db.transaction(async (tx) => {
     await tx.execute(
       sql`select id from collaborations where id = ${input.collaborationId} for update`,
@@ -160,34 +187,111 @@ export async function markCollaborationPaid(input: {
       .from(collaborations)
       .where(eq(collaborations.id, input.collaborationId))
       .limit(1);
-    if (!c || c.paidAt) return;
-    if (c.status !== "Awaiting payment") return;
+    if (!c) return;
 
-    const agreement = c.agreement as Terms;
+    if (c.paidAt) {
+      // Money already recorded. If the collab was cancelled without a refund,
+      // make sure the outbox still has work to do.
+      if (
+        c.status === "Cancelled" &&
+        !c.refundedAt &&
+        c.settlementStatus !== "refunded" &&
+        c.settlementStatus !== "released"
+      ) {
+        await tx
+          .update(collaborations)
+          .set({
+            settlementStatus: "refund_pending",
+            settlementNextAttemptAt: new Date(),
+          })
+          .where(eq(collaborations.id, c.id));
+        enqueueRefund = true;
+      }
+      return;
+    }
+
+    if (c.status === "Awaiting payment") {
+      const agreement = c.agreement as Terms;
+      await tx
+        .update(collaborations)
+        .set({
+          status: "Active",
+          paidAt: new Date(),
+          stripePaymentIntentId: input.paymentIntentId,
+        })
+        .where(eq(collaborations.id, c.id));
+
+      const deadline = new Date(Date.now() + (agreement.days || 7) * 86400000);
+      await tx
+        .update(contributions)
+        .set({ deadlineAt: deadline })
+        .where(eq(contributions.collaborationId, c.id));
+      return;
+    }
+
+    // Late payment after cancel (or unexpected state): keep the money trail and
+    // refund. Activating a Cancelled collab would resurrect dead work.
     await tx
       .update(collaborations)
       .set({
-        status: "Active",
         paidAt: new Date(),
         stripePaymentIntentId: input.paymentIntentId,
+        settlementStatus: "refund_pending",
+        settlementNextAttemptAt: new Date(),
+        settlementLastError: null,
       })
       .where(eq(collaborations.id, c.id));
-
-    // Paid work starts counting from activation, matching the demo behaviour.
-    const deadline = new Date(Date.now() + (agreement.days || 7) * 86400000);
-    await tx
-      .update(contributions)
-      .set({ deadlineAt: deadline })
-      .where(eq(contributions.collaborationId, c.id));
+    enqueueRefund = true;
   });
+
+  if (enqueueRefund) {
+    try {
+      await refundCollaboration(input.collaborationId);
+    } catch (error) {
+      console.error("Late-payment refund deferred", input.collaborationId, error);
+    }
+  }
+}
+
+export async function enqueueRelease(collaborationId: string) {
+  const db = getDb();
+  await db
+    .update(collaborations)
+    .set({
+      settlementStatus: "release_pending",
+      settlementNextAttemptAt: new Date(),
+      settlementLastError: null,
+    })
+    .where(
+      and(
+        eq(collaborations.id, collaborationId),
+        sql`${collaborations.settlementStatus} not in ('released', 'refunded')`,
+      ),
+    );
+}
+
+export async function enqueueRefund(collaborationId: string) {
+  const db = getDb();
+  await db
+    .update(collaborations)
+    .set({
+      settlementStatus: "refund_pending",
+      settlementNextAttemptAt: new Date(),
+      settlementLastError: null,
+    })
+    .where(
+      and(
+        eq(collaborations.id, collaborationId),
+        sql`${collaborations.settlementStatus} not in ('released', 'refunded')`,
+      ),
+    );
 }
 
 /**
  * Releases escrow to the performer once their delivery is approved.
  *
- * Runs after the approving transaction has committed so a Stripe failure cannot
- * roll back the approval, and is guarded by stripeTransferId so a repeat call
- * cannot pay twice.
+ * Failures leave settlementStatus=release_pending with a backoff timestamp so
+ * drainSettlementQueue (or the next webhook/reconcile pass) can retry.
  */
 export async function releaseEscrow(collaborationId: string) {
   const db = getDb();
@@ -199,28 +303,56 @@ export async function releaseEscrow(collaborationId: string) {
   if (!c) return;
   if ((c.agreement as Terms).mode !== "Paid") return;
   if (!c.paidAt || c.stripeTransferId || c.refundedAt) return;
+  if (c.settlementStatus === "released" || c.settlementStatus === "refunded") return;
 
   const performer = await performerFor(c.id, c.payerArtistId);
-  if (!performer.stripeAccountId) return;
+  if (!performer.stripeAccountId) {
+    await markSettlementFailure(c.id, "release_pending", "Performer has no Stripe account.");
+    return;
+  }
 
   const payout = c.amountCents - c.platformFeeCents;
-  if (payout <= 0) return;
+  if (payout <= 0) {
+    await db
+      .update(collaborations)
+      .set({
+        settlementStatus: "released",
+        releasedAt: new Date(),
+        settlementLastError: null,
+        settlementNextAttemptAt: null,
+      })
+      .where(eq(collaborations.id, c.id));
+    return;
+  }
 
-  const transfer = await getStripe().transfers.create(
-    {
-      amount: payout,
-      currency: "eur",
-      destination: performer.stripeAccountId,
-      transfer_group: c.stripeTransferGroup ?? `collab_${c.id}`,
-      metadata: { collaborationId: c.id },
-    },
-    { idempotencyKey: `transfer_${c.id}` },
-  );
+  try {
+    const transfer = await getStripe().transfers.create(
+      {
+        amount: payout,
+        currency: "eur",
+        destination: performer.stripeAccountId,
+        transfer_group: c.stripeTransferGroup ?? `collab_${c.id}`,
+        metadata: { collaborationId: c.id },
+      },
+      { idempotencyKey: `transfer_${c.id}` },
+    );
 
-  await db
-    .update(collaborations)
-    .set({ stripeTransferId: transfer.id, releasedAt: new Date() })
-    .where(and(eq(collaborations.id, c.id), sql`${collaborations.stripeTransferId} is null`));
+    await db
+      .update(collaborations)
+      .set({
+        stripeTransferId: transfer.id,
+        releasedAt: new Date(),
+        settlementStatus: "released",
+        settlementLastError: null,
+        settlementNextAttemptAt: null,
+      })
+      .where(
+        and(eq(collaborations.id, c.id), sql`${collaborations.stripeTransferId} is null`),
+      );
+  } catch (error) {
+    await markSettlementFailure(c.id, "release_pending", (error as Error).message);
+    throw error;
+  }
 }
 
 /** Refunds a paid collaboration that ends up cancelled before release. */
@@ -231,19 +363,92 @@ export async function refundCollaboration(collaborationId: string) {
     .from(collaborations)
     .where(eq(collaborations.id, collaborationId))
     .limit(1);
-  if (!c?.paidAt || !c.stripePaymentIntentId) return;
+  if (!c) return;
   if (c.stripeTransferId) throw new Error("This work was already paid out.");
-  if (c.refundedAt) return;
+  if (c.refundedAt || c.settlementStatus === "refunded") return;
+  if (!c.paidAt || !c.stripePaymentIntentId) return;
 
-  const refund = await getStripe().refunds.create(
-    { payment_intent: c.stripePaymentIntentId },
-    { idempotencyKey: `refund_${c.id}` },
-  );
+  try {
+    const refund = await getStripe().refunds.create(
+      { payment_intent: c.stripePaymentIntentId },
+      { idempotencyKey: `refund_${c.id}` },
+    );
 
+    await db
+      .update(collaborations)
+      .set({
+        stripeRefundId: refund.id,
+        refundedAt: new Date(),
+        settlementStatus: "refunded",
+        settlementLastError: null,
+        settlementNextAttemptAt: null,
+      })
+      .where(and(eq(collaborations.id, c.id), sql`${collaborations.refundedAt} is null`));
+  } catch (error) {
+    await markSettlementFailure(c.id, "refund_pending", (error as Error).message);
+    throw error;
+  }
+}
+
+/**
+ * Retries pending releases/refunds whose backoff window has elapsed.
+ * Safe to call from the webhook and from a cron reconcile route.
+ */
+export async function drainSettlementQueue(limit = 20) {
+  const db = getDb();
+  const now = new Date();
+  const due = await db
+    .select({ id: collaborations.id, settlementStatus: collaborations.settlementStatus })
+    .from(collaborations)
+    .where(
+      and(
+        or(
+          eq(collaborations.settlementStatus, "release_pending"),
+          eq(collaborations.settlementStatus, "refund_pending"),
+        ),
+        or(
+          sql`${collaborations.settlementNextAttemptAt} is null`,
+          lt(collaborations.settlementNextAttemptAt, now),
+        ),
+        sql`${collaborations.settlementAttempts} < ${MAX_SETTLEMENT_ATTEMPTS}`,
+      ),
+    )
+    .limit(limit);
+
+  for (const row of due) {
+    try {
+      if (row.settlementStatus === "release_pending") await releaseEscrow(row.id);
+      else await refundCollaboration(row.id);
+    } catch (error) {
+      console.error("Settlement retry failed", row.id, error);
+    }
+  }
+  return due.length;
+}
+
+async function markSettlementFailure(
+  collaborationId: string,
+  status: "release_pending" | "refund_pending",
+  message: string,
+) {
+  const db = getDb();
+  const [c] = await db
+    .select({ attempts: collaborations.settlementAttempts })
+    .from(collaborations)
+    .where(eq(collaborations.id, collaborationId))
+    .limit(1);
+  const attempts = (c?.attempts ?? 0) + 1;
+  // Exponential backoff capped at one hour so operators see progress soon.
+  const delayMs = Math.min(2 ** Math.min(attempts, 10) * 30_000, 60 * 60 * 1000);
   await db
     .update(collaborations)
-    .set({ stripeRefundId: refund.id, refundedAt: new Date() })
-    .where(and(eq(collaborations.id, c.id), sql`${collaborations.refundedAt} is null`));
+    .set({
+      settlementStatus: status,
+      settlementAttempts: attempts,
+      settlementLastError: message.slice(0, 2000),
+      settlementNextAttemptAt: new Date(Date.now() + delayMs),
+    })
+    .where(eq(collaborations.id, collaborationId));
 }
 
 async function performerFor(collaborationId: string, payerArtistId: string) {
@@ -262,5 +467,3 @@ async function performerFor(collaborationId: string, payerArtistId: string) {
   if (!performer) throw new Error("Performer not found.");
   return performer;
 }
-
-export type { Tx };

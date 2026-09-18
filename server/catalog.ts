@@ -106,6 +106,7 @@ export async function loadCatalogStore(viewerArtistId?: string): Promise<Store> 
     reviews: reviewRows.map((r) => ({
       collaboration: r.collaborationId,
       author: r.authorArtistId,
+      subject: r.subjectArtistId,
       rating: r.rating,
       text: r.text,
     })),

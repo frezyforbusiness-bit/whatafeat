@@ -32,13 +32,26 @@ holds funds until the work is approved:
 5. A cancellation agreed before release refunds the payer. After release it is
    refused.
 
-Every webhook is claimed once via the `stripe_events` table, and the Stripe calls
-use idempotency keys, so retries cannot double-charge or double-pay.
+Every webhook is claimed with a lease (`stripe_events.status`), not by id alone —
+a crash between claim and completion lets Stripe's retry reclaim the same event.
+Pending releases and refunds live on `collaborations.settlement_status` and are
+retried from the webhook and from `POST /api/stripe/reconcile` (protect with
+`CRON_SECRET`).
+
+Late money after a cancel is recorded and refunded; it is never silently dropped.
+Checkout is card-only so activation does not depend on delayed payment methods.
 
 Local webhook testing:
 
 ```bash
 stripe listen --forward-to localhost:3000/api/stripe/webhook
+```
+
+Reconcile stuck settlements:
+
+```bash
+curl -X POST -H "Authorization: Bearer $CRON_SECRET" \
+  "$NEXT_PUBLIC_APP_URL/api/stripe/reconcile"
 ```
 
 ## Local demo (no secrets)
