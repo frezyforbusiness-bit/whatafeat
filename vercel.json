@@ -8,5 +8,11 @@
     "env": {
       "DOCKER_BUILD": "0"
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/stripe/reconcile",
+      "schedule": "*/15 * * * *"
+    }
+  ]
 }

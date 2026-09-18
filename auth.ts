@@ -11,6 +11,8 @@ import {
 } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
+import { assertRateLimit } from "@/lib/rate-limit";
+
 const providers = [];
 if (process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET) {
   providers.push(
@@ -38,6 +40,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     signIn: "/sign-in",
   },
   callbacks: {
+    async signIn({ user }) {
+      try {
+        await assertRateLimit("auth", `email:${user.email || user.id || "unknown"}`);
+        return true;
+      } catch {
+        return false;
+      }
+    },
     async session({ session, user }) {
       if (session.user && user) {
         session.user.id = user.id;

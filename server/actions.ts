@@ -24,6 +24,9 @@ import {
 } from "@/db/schema";
 import type { Terms } from "@/domain/model";
 import { paymentsEnabled } from "@/lib/flags";
+import { assertPaymentsReady } from "@/lib/payment-decisions";
+import { assertRateLimit } from "@/lib/rate-limit";
+import { captureException } from "@/lib/monitoring";
 import {
   assertDeliveryFile,
   assertDemoFile,
@@ -209,6 +212,15 @@ export async function saveOffer(input: unknown) {
   const data = parseOrThrow(saveOfferSchema, input);
   const { profile } = await requireOnboardedArtist();
   if (!profile.hasDemo) throw new Error("Add a profile demo before publishing an offer.");
+  if (data.mode === "Paid") {
+    assertPaymentsReady({
+      paymentsEnabled: paymentsEnabled(),
+      stripeConfigured: stripeConfigured(),
+    });
+    if (!profile.stripePayoutsEnabled) {
+      throw new Error("Finish payout setup in Settings before publishing paid offers.");
+    }
+  }
   const db = getDb();
   const values = {
     title: data.title,
@@ -373,6 +385,7 @@ export async function applyToVerse(input: unknown) {
 export async function sendProposalAction(input: unknown) {
   const data = parseOrThrow(sendProposalSchema, input);
   const { profile } = await requireOnboardedArtist();
+  await assertRateLimit("proposal", `artist:${profile.id}`);
   const db = getDb();
   if (profile.id === data.toArtistId) throw new Error("You cannot propose to yourself.");
 
@@ -642,10 +655,10 @@ export async function transitionProposalAction(proposalId: string, action: unkno
  * webhook, never here, so closing the tab after paying still activates the work.
  */
 export async function activatePaymentAction(collaborationId: string) {
-  if (!paymentsEnabled()) {
-    throw new Error("Payments are not available yet. Trades work without payment.");
-  }
-  if (!stripeConfigured()) throw new Error("Payment provider is not configured.");
+  assertPaymentsReady({
+    paymentsEnabled: paymentsEnabled(),
+    stripeConfigured: stripeConfigured(),
+  });
   const { profile } = await requireOnboardedArtist();
   return createCheckoutSession(collaborationId, profile.id);
 }
@@ -812,7 +825,9 @@ export async function contributionActionServer(input: unknown) {
     try {
       await releaseEscrow(data.collaborationId);
     } catch (error) {
-      console.error("Escrow release deferred", data.collaborationId, error);
+      await captureException(error, {
+        tags: { area: "release_deferred", collaborationId: data.collaborationId },
+      });
     }
   }
 
@@ -888,7 +903,9 @@ export async function cancelCollaborationAction(collaborationId: string) {
     try {
       await refundCollaboration(collaborationId);
     } catch (error) {
-      console.error("Refund deferred", collaborationId, error);
+      await captureException(error, {
+        tags: { area: "refund_deferred", collaborationId },
+      });
     }
   }
 
@@ -897,6 +914,7 @@ export async function cancelCollaborationAction(collaborationId: string) {
 
 export async function sendMessageAction(proposalId: string, text: string) {
   const { profile } = await requireOnboardedArtist();
+  await assertRateLimit("message", `artist:${profile.id}`);
   const body = text.trim();
   if (!body) return;
   const db = getDb();
@@ -937,6 +955,7 @@ export async function toggleBlockAction(targetArtistId: string) {
 
 export async function reportAction(target: string, reason: string) {
   const { profile } = await requireOnboardedArtist();
+  await assertRateLimit("report", `artist:${profile.id}`);
   const db = getDb();
   await db.insert(reports).values({
     authorArtistId: profile.id,

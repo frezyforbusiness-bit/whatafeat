@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
 
 const nextConfig: NextConfig = {
   // Standalone is for Docker/self-host only. On Vercel it breaks NFT tracing
@@ -8,4 +9,17 @@ const nextConfig: NextConfig = {
     : {}),
 };
 
-export default nextConfig;
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  silent: !process.env.SENTRY_AUTH_TOKEN,
+  // Skip source-map upload unless CI has a token — build must not fail without it.
+  sourcemaps: {
+    disable: !process.env.SENTRY_AUTH_TOKEN,
+  },
+  widenClientFileUpload: false,
+  disableLogger: true,
+  webpack: {
+    automaticVercelMonitors: false,
+  },
+});

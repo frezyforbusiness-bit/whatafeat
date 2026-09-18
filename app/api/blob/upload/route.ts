@@ -9,6 +9,7 @@ import {
   DELIVERY_MAX_BYTES,
   DEMO_MAX_BYTES,
 } from "@/server/blob";
+import { assertRateLimit, clientIp } from "@/lib/rate-limit";
 
 const DEMO_CONTENT_TYPES = ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp3"];
 
@@ -20,6 +21,12 @@ const DEMO_CONTENT_TYPES = ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp3
  * namespace and constrains content type and maximum size per upload kind.
  */
 export async function POST(request: Request) {
+  try {
+    await assertRateLimit("upload", `ip:${clientIp(request)}`);
+  } catch (error) {
+    return NextResponse.json({ error: (error as Error).message }, { status: 429 });
+  }
+
   const body = (await request.json()) as HandleUploadBody;
 
   try {
@@ -44,6 +51,8 @@ export async function POST(request: Request) {
         if (!pathname.startsWith(expectedPrefix)) {
           throw new Error("Invalid upload destination.");
         }
+
+        await assertRateLimit("upload", `user:${session.user.id}`);
 
         return {
           allowedContentTypes:

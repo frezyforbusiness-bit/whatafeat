@@ -9,6 +9,8 @@ import {
   contributions,
 } from "@/db/schema";
 import type { Terms } from "@/domain/model";
+import { decideIncomingPayment } from "@/lib/payment-decisions";
+import { captureException } from "@/lib/monitoring";
 import { appUrl, getStripe, platformFeeCents } from "@/server/stripe";
 
 const MAX_SETTLEMENT_ATTEMPTS = 25;
@@ -189,28 +191,23 @@ export async function markCollaborationPaid(input: {
       .limit(1);
     if (!c) return;
 
-    if (c.paidAt) {
-      // Money already recorded. If the collab was cancelled without a refund,
-      // make sure the outbox still has work to do.
-      if (
-        c.status === "Cancelled" &&
-        !c.refundedAt &&
-        c.settlementStatus !== "refunded" &&
-        c.settlementStatus !== "released"
-      ) {
-        await tx
-          .update(collaborations)
-          .set({
-            settlementStatus: "refund_pending",
-            settlementNextAttemptAt: new Date(),
-          })
-          .where(eq(collaborations.id, c.id));
-        enqueueRefund = true;
-      }
+    const decision = decideIncomingPayment(c);
+
+    if (decision === "noop") return;
+
+    if (decision === "enqueue_refund") {
+      await tx
+        .update(collaborations)
+        .set({
+          settlementStatus: "refund_pending",
+          settlementNextAttemptAt: new Date(),
+        })
+        .where(eq(collaborations.id, c.id));
+      enqueueRefund = true;
       return;
     }
 
-    if (c.status === "Awaiting payment") {
+    if (decision === "activate") {
       const agreement = c.agreement as Terms;
       await tx
         .update(collaborations)
@@ -229,8 +226,7 @@ export async function markCollaborationPaid(input: {
       return;
     }
 
-    // Late payment after cancel (or unexpected state): keep the money trail and
-    // refund. Activating a Cancelled collab would resurrect dead work.
+    // record_and_refund — late payment after cancel / unexpected state
     await tx
       .update(collaborations)
       .set({
@@ -248,7 +244,9 @@ export async function markCollaborationPaid(input: {
     try {
       await refundCollaboration(input.collaborationId);
     } catch (error) {
-      console.error("Late-payment refund deferred", input.collaborationId, error);
+      await captureException(error, {
+        tags: { area: "late_refund", collaborationId: input.collaborationId },
+      });
     }
   }
 }
@@ -351,6 +349,9 @@ export async function releaseEscrow(collaborationId: string) {
       );
   } catch (error) {
     await markSettlementFailure(c.id, "release_pending", (error as Error).message);
+    await captureException(error, {
+      tags: { area: "release_escrow", collaborationId },
+    });
     throw error;
   }
 }
@@ -386,6 +387,9 @@ export async function refundCollaboration(collaborationId: string) {
       .where(and(eq(collaborations.id, c.id), sql`${collaborations.refundedAt} is null`));
   } catch (error) {
     await markSettlementFailure(c.id, "refund_pending", (error as Error).message);
+    await captureException(error, {
+      tags: { area: "refund", collaborationId },
+    });
     throw error;
   }
 }

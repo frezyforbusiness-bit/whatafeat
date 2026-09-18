@@ -3,6 +3,8 @@ import { getDb } from "@/db";
 import { assets } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
+export { assertOwnedBlobPath } from "@/lib/blob-ownership";
+
 const PUBLIC_AUDIO = ["audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp3"];
 const PUBLIC_IMAGE = ["image/jpeg", "image/png", "image/webp"];
 
@@ -105,21 +107,6 @@ export async function recordAsset(input: {
     })
     .returning();
   return row;
-}
-
-/**
- * Ownership comes from Blob's own pathname, never from a parallel client field.
- * A caller who knows another object's URL cannot claim it by sending their own
- * prefix in a separate `pathname` argument.
- */
-export function assertOwnedBlobPath(
-  meta: { pathname: string },
-  opts: { userId: string; kind: "demo" | "delivery" },
-) {
-  const prefix = opts.kind === "demo" ? `demos/${opts.userId}/` : `deliveries/${opts.userId}/`;
-  if (!meta.pathname.startsWith(prefix)) {
-    throw new Error("Invalid upload.");
-  }
 }
 
 /**
