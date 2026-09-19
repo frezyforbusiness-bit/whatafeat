@@ -15,7 +15,6 @@ function PopoverTrigger({
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Trigger>) {
   return <PopoverPrimitive.Trigger data-slot="popover-trigger" {...props} />
-  // eslint-disable-next-line react/no-unknown-property
 }
 
 function PopoverContent({
