@@ -89,8 +89,8 @@ export function PlayerProvider({children}:{children:ReactNode}){
       <div className="now-playing">
         {track?<Artwork art={track.art}/>:<Disc3 size={34} className="player-idle-icon"/>}
         <div>
-          <b>{track?.title||'Nothing playing yet'}</b>
-          <p>{track?.artist||'Tap play to get started'}</p>
+          <b>{track?.title||'nothing playing yet'}</b>
+          <p>{track?.artist||'hit play when you\'re ready'}</p>
         </div>
       </div>
       <div className="playback">

@@ -17,8 +17,8 @@ const mono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Whatafeat — Find your next collaborator",
-  description: "Discover independent artists. Trade verses. Book features.",
+  title: "Whatafeat — find your next feat",
+  description: "Find independent artists. Trade verses. Lock in feats.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
@@ -34,7 +34,7 @@ export default function RootLayout({
     <html lang="en" className={`${inter.variable} ${mono.variable}`}>
       <body className="antialiased">
         <AuthProvider>
-          <Suspense fallback={<p>Loading Whatafeat…</p>}>{children}</Suspense>
+          <Suspense fallback={<p>loading the scene…</p>}>{children}</Suspense>
         </AuthProvider>
       </body>
     </html>
