@@ -63,8 +63,9 @@ npm run dev                  # http://localhost:3000
 2. Google OAuth (redirect `http://localhost:3000/api/auth/callback/google`)
 3. Vercel Blob → `BLOB_READ_WRITE_TOKEN`
 4. Fill `.env.local` (`NEXT_PUBLIC_DEMO=0`, auth, blob, app URL)
-5. `npm run db:migrate`
-6. `npm run dev` → Google sign-in → onboarding → Trade flow
+5. `npm run db:migrate`   # through 0003_artist_profile_onboarding
+6. `node scripts/check-prod-env.mjs`
+7. `npm run dev` → Google sign-in → onboarding → upload profile demo → Trade flow
 
 Optional: Sentry (`SENTRY_DSN`), Upstash (`UPSTASH_REDIS_REST_*`), Stripe test keys.
 

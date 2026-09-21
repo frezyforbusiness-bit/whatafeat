@@ -21,7 +21,8 @@
     "install:ci": "node scripts/install-ci.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "check:prod-env": "node scripts/check-prod-env.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

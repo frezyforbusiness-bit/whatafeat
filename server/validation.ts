@@ -186,7 +186,7 @@ export const finalizeOnboardingSchema = z.object({
   artistTypes: z.array(z.string().trim().min(1).max(40)).min(1, "pick at least one artist type."),
 });
 
-export const profileSectionSchema = z.enum(["profile", "sound", "music", "feat", "socials"]);
+export const profileSectionSchema = z.enum(["profile", "sound", "music", "feat", "socials", "about"]);
 
 export const updateProfileSectionSchema = z.object({
   section: profileSectionSchema,

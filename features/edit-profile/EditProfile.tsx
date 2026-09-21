@@ -3,7 +3,11 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { Artist } from "@/domain/model";
-import { updateProfileSection, recordProfileAvatar, checkSlugAvailable } from "@/server/actions";
+import {
+  updateProfileSection,
+  recordProfileAvatar,
+  checkSlugAvailable,
+} from "@/server/actions";
 import { uploadAvatar } from "@/features/uploads";
 import { artistToDraft, type ProfileDraft } from "@/features/onboarding/ProfilePreview";
 import { profileCompletion } from "@/features/onboarding/completion";
@@ -13,9 +17,11 @@ import { MusicStep } from "@/features/onboarding/steps/MusicStep";
 import { FeatSettingsStep } from "@/features/onboarding/steps/FeatSettingsStep";
 import { AboutStep } from "@/features/onboarding/steps/AboutStep";
 import { PROFILE_LANGUAGES } from "@/lib/profile-constants";
+import { DemoAudioField } from "./DemoAudioField";
 
 const SECTIONS = [
   { id: "profile", label: "profile" },
+  { id: "about", label: "about" },
   { id: "sound", label: "sound" },
   { id: "music", label: "music" },
   { id: "feat", label: "feat settings" },
@@ -35,13 +41,15 @@ type Props = {
 export function EditProfile({ me, demo, userId, onDemoSave, accountPanel }: Props) {
   const [section, setSection] = useState<Section>("profile");
   const [draft, setDraft] = useState<ProfileDraft>(() => artistToDraft(me));
+  const [hasDemo, setHasDemo] = useState(!!me.demo);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [slugStatus, setSlugStatus] = useState("");
-  const completion = profileCompletion({ ...me, ...draft, price: draft.priceCents });
+  const completion = profileCompletion({ ...me, ...draft, price: draft.priceCents, demo: hasDemo });
 
   useEffect(() => {
     setDraft(artistToDraft(me));
+    setHasDemo(!!me.demo);
   }, [me]);
 
   useEffect(() => {
@@ -80,7 +88,7 @@ export function EditProfile({ me, demo, userId, onDemoSave, accountPanel }: Prop
     setBusy(true);
     try {
       if (demo) {
-        onDemoSave(draft);
+        onDemoSave({ ...draft, demo: hasDemo });
         toast.success("saved");
         return;
       }
@@ -93,6 +101,11 @@ export function EditProfile({ me, demo, userId, onDemoSave, accountPanel }: Prop
             location: draft.location,
             artistTypes: draft.artistTypes,
           },
+        });
+      } else if (section === "about") {
+        await updateProfileSection({
+          section: "about",
+          data: { bio: draft.bio, description: draft.description },
         });
       } else if (section === "sound") {
         await updateProfileSection({
@@ -158,14 +171,23 @@ export function EditProfile({ me, demo, userId, onDemoSave, accountPanel }: Prop
       </div>
       <div className="panel">
         {section === "profile" && (
-          <BasicStep
-            draft={draft}
-            onChange={patch}
-            slugStatus={slugStatus}
-            onAvatarFile={onAvatarFile}
-            uploading={uploading}
-          />
+          <>
+            <BasicStep
+              draft={draft}
+              onChange={patch}
+              slugStatus={slugStatus}
+              onAvatarFile={onAvatarFile}
+              uploading={uploading}
+            />
+            <DemoAudioField
+              demo={demo}
+              userId={userId}
+              hasDemo={hasDemo}
+              onDemoFlag={setHasDemo}
+            />
+          </>
         )}
+        {section === "about" && <AboutStep draft={draft} onChange={patch} />}
         {section === "sound" && (
           <>
             <SoundStep draft={draft} onChange={patch} />

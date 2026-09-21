@@ -282,6 +282,9 @@ export async function updateProfileSection(input: unknown) {
     case "feat":
       draft = parseOrThrow(profileFeatSchema, data);
       break;
+    case "about":
+      draft = parseOrThrow(profileAboutSchema, data);
+      break;
     default:
       throw new Error("Unknown section.");
   }
@@ -341,7 +344,8 @@ export async function recordProfileAvatar(input: { pathname: string; url: string
  * register it under their own prefix.
  */
 export async function recordProfileDemo(input: { pathname: string; url: string; name: string }) {
-  const { session, profile } = await requireOnboardedArtist();
+  // Allow during onboarding (wizard music step) before finalizeOnboarding.
+  const { session, profile } = await requireArtist();
   const meta = await head(input.url);
   assertOwnedBlobPath(meta, { userId: session.user.id, kind: "demo" });
   assertDemoFile(meta.contentType ?? "", meta.size);

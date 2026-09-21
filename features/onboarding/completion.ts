@@ -16,6 +16,7 @@ export function profileCompletion(a: Partial<Artist> | null | undefined): Comple
     {
       key: "music link",
       ok: !!(
+        a.demo ||
         a.featuredTrackUrl ||
         a.spotifyUrl ||
         a.appleMusicUrl ||

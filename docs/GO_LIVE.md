@@ -20,13 +20,25 @@ Never use `npm run db:push` against Production. Only migrate from files in `driz
 
 ```sh
 # From the repo root, with DATABASE_URL pointing at Neon:
-cp .env.example .env.local   # fill DATABASE_URL
-npm ci
-npm run db:migrate           # applies 0000 → 0001 → 0002 in order
+cp .env.example .env.local   # fill DATABASE_URL (+ auth/blob when ready)
+npm install
+npm run db:migrate           # applies 0000 → 0001 → 0002 → 0003 in order
 ```
 
-Confirm in the Neon SQL editor that `__drizzle_migrations` lists all three and that
-`collaborations.settlement_status` and `stripe_events.status` exist.
+Confirm in the Neon SQL editor that `__drizzle_migrations` lists **all four** tags:
+
+- `0000_powerful_slyde`
+- `0001_keen_natasha_romanoff`
+- `0002_slimy_titania`
+- `0003_artist_profile_onboarding`
+
+Also confirm `collaborations.settlement_status`, `stripe_events.status`, and onboarding columns (`artist_types`, `feat_status`, …) exist.
+
+Optional local check (requires `.env.local` with `NEXT_PUBLIC_DEMO=0` and secrets filled):
+
+```sh
+node scripts/check-prod-env.mjs
+```
 
 ## 3. Vercel Production env
 
@@ -43,13 +55,13 @@ Confirm in the Neon SQL editor that `__drizzle_migrations` lists all three and t
 | `SENTRY_DSN` / `NEXT_PUBLIC_SENTRY_DSN` | after Sentry project exists |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | after Upstash DB exists |
 
-Redeploy after setting env.
+Redeploy after setting env. Do **not** leave `NEXT_PUBLIC_DEMO=1` on Production.
 
 ## 4. Smoke acceptance (two Google accounts)
 
 Run on the production (or staging) URL with `NEXT_PUBLIC_DEMO=0`.
 
-- [ ] Account A: sign in → onboarding → upload profile demo → publish Trade offer and/or open verse
+- [ ] Account A: sign in → onboarding → upload profile **demo audio** (settings/onboarding) → publish Trade offer and/or open verse
 - [ ] Account B: discover A → send Trade proposal → A accepts
 - [ ] Both: open room → upload delivery → request revision → approve → Completed
 - [ ] Leave a review; open A's profile **signed out** — review is visible
@@ -59,3 +71,9 @@ Run on the production (or staging) URL with `NEXT_PUBLIC_DEMO=0`.
 - [ ] Paid CTA stays gated / “not available yet” while `PAYMENTS_ENABLED≠1`
 
 **Exit:** Trade path stable on the public domain; Paid still off.
+
+## 5. Paid (later — do not skip)
+
+1. Complete [STRIPE_TEST_MATRIX.md](./STRIPE_TEST_MATRIX.md) in test mode
+2. Follow [PAID_LIVE_RUNBOOK.md](./PAID_LIVE_RUNBOOK.md)
+3. Only then set `PAYMENTS_ENABLED=1` + live Stripe keys + `CRON_SECRET`

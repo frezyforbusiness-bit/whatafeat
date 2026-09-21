@@ -19,6 +19,7 @@ import { MusicStep } from "./steps/MusicStep";
 import { FeatSettingsStep } from "./steps/FeatSettingsStep";
 import { AboutStep } from "./steps/AboutStep";
 import { PreviewStep } from "./steps/PreviewStep";
+import { DemoAudioField } from "@/features/edit-profile/DemoAudioField";
 
 const STEPS = ["basic", "sound", "music", "feats", "about", "preview"] as const;
 
@@ -35,6 +36,7 @@ export function OnboardingWizard({ me, demo, account, userId, onDemoSave, onComp
   const router = useRouter();
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<ProfileDraft>(() => artistToDraft(me));
+  const [hasDemo, setHasDemo] = useState(!!me?.demo);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [slugStatus, setSlugStatus] = useState("");
@@ -42,7 +44,8 @@ export function OnboardingWizard({ me, demo, account, userId, onDemoSave, onComp
 
   useEffect(() => {
     setDraft(artistToDraft(me));
-  }, [me?.id, me?.slug, me?.name]);
+    setHasDemo(!!me?.demo);
+  }, [me?.id, me?.slug, me?.name, me?.demo]);
 
   useEffect(() => {
     if (!draft.slug || draft.slug.length < 2) {
@@ -91,7 +94,7 @@ export function OnboardingWizard({ me, demo, account, userId, onDemoSave, onComp
 
   async function persistDraft() {
     if (demo) {
-      onDemoSave(draft, false);
+      onDemoSave({ ...draft, demo: hasDemo }, false);
       return;
     }
     await saveProfileDraft(draftPayload);
@@ -157,7 +160,7 @@ export function OnboardingWizard({ me, demo, account, userId, onDemoSave, onComp
     setBusy(true);
     try {
       if (demo) {
-        onDemoSave(draft, true);
+        onDemoSave({ ...draft, demo: hasDemo }, true);
       } else {
         await persistDraft();
         await finalizeOnboarding({
@@ -217,7 +220,7 @@ export function OnboardingWizard({ me, demo, account, userId, onDemoSave, onComp
         />
       )}
       {step === 1 && <SoundStep draft={draft} onChange={patch} />}
-      {step === 2 && <MusicStep draft={draft} onChange={patch} />}
+      {step === 2 && <><MusicStep draft={draft} onChange={patch} /><div className="panel"><DemoAudioField demo={demo} userId={userId} hasDemo={hasDemo} onDemoFlag={(v)=>{setHasDemo(v);patch({demo:v});}}/></div></>}
       {step === 3 && <FeatSettingsStep draft={draft} onChange={patch} />}
       {step === 4 && <AboutStep draft={draft} onChange={patch} />}
       {step === 5 && <PreviewStep draft={draft} />}
@@ -288,6 +291,7 @@ export function applyDraftToArtist(a: Artist, draft: ProfileDraft, finalize: boo
     currency: draft.currency,
     trade: draft.featStatus !== "closed" && draft.collaborationTypes.includes("swap"),
     avatarUrl: draft.avatarUrl ?? a.avatarUrl,
+    demo: draft.demo ?? a.demo,
     onboardingComplete: finalize ? true : a.onboardingComplete,
   };
 }
