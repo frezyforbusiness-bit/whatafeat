@@ -93,6 +93,35 @@ export async function loadCatalogStore(viewerArtistId?: string): Promise<Store> 
     tracksByArtist.set(s.profileId, list);
   }
 
+  const mapProfile = (a: (typeof artistRows)[number]) => {
+    const avatar =
+      a.avatarAssetId && publicAssetById.has(a.avatarAssetId)
+        ? `/api/assets/${a.avatarAssetId}`
+        : undefined;
+    return { ...mapArtist(a, avatar), tracks: tracksByArtist.get(a.id) ?? [] };
+  };
+
+  // Incomplete signed-in profile must be available for onboarding prefill.
+  let artists = artistRows.map(mapProfile);
+  if (viewerArtistId && !artists.some((a) => a.id === viewerArtistId)) {
+    const [self] = await db
+      .select()
+      .from(artistProfiles)
+      .where(eq(artistProfiles.id, viewerArtistId))
+      .limit(1);
+    if (self) {
+      if (self.avatarAssetId && !publicAssetById.has(self.avatarAssetId)) {
+        const [avatarAsset] = await db
+          .select()
+          .from(assets)
+          .where(eq(assets.id, self.avatarAssetId))
+          .limit(1);
+        if (avatarAsset) publicAssetById.set(avatarAsset.id, avatarAsset);
+      }
+      artists = [mapProfile(self), ...artists];
+    }
+  }
+
   const versePreviewUrl = (previewAssetId: string | null) => {
     if (!previewAssetId) return undefined;
     return publicAssetById.has(previewAssetId) ? `/api/assets/${previewAssetId}` : undefined;
@@ -100,7 +129,7 @@ export async function loadCatalogStore(viewerArtistId?: string): Promise<Store> 
 
   const publicStore = {
     version: 1 as const,
-    artists: artistRows.map((a) => ({ ...mapArtist(a), tracks: tracksByArtist.get(a.id) ?? [] })),
+    artists,
     offers: offerRows.map(mapOffer),
     verses: verseRows.map((v) => ({ ...mapVerse(v), previewUrl: versePreviewUrl(v.previewAssetId) })),
     reviews: reviewRows.map((r) => ({
@@ -294,5 +323,5 @@ export async function searchArtists(input: {
     .from(artistProfiles)
     .where(and(...conditions))
     .orderBy(desc(artistProfiles.createdAt));
-  return rows.map(mapArtist);
+  return rows.map((a) => mapArtist(a));
 }

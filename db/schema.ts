@@ -106,6 +106,9 @@ export const verificationTokens = pgTable(
   (t) => [primaryKey({ columns: [t.identifier, t.token] })],
 );
 
+export const featStatusEnum = pgEnum("feat_status", ["open", "selective", "closed"]);
+export const pricingModeEnum = pgEnum("pricing_mode", ["fixed", "starting_from", "offer"]);
+
 export const artistProfiles = pgTable(
   "artist_profiles",
   {
@@ -126,6 +129,22 @@ export const artistProfiles = pgTable(
     avatarAssetId: uuid("avatar_asset_id"),
     artIndex: integer("art_index").notNull().default(0),
     onboardingComplete: boolean("onboarding_complete").notNull().default(false),
+    location: text("location").notNull().default(""),
+    artistTypes: jsonb("artist_types").$type<string[]>().notNull().default([]),
+    genres: jsonb("genres").$type<string[]>().notNull().default([]),
+    influences: jsonb("influences").$type<string[]>().notNull().default([]),
+    description: text("description").notNull().default(""),
+    spotifyUrl: text("spotify_url").notNull().default(""),
+    appleMusicUrl: text("apple_music_url").notNull().default(""),
+    soundcloudUrl: text("soundcloud_url").notNull().default(""),
+    youtubeUrl: text("youtube_url").notNull().default(""),
+    instagramUrl: text("instagram_url").notNull().default(""),
+    tiktokUrl: text("tiktok_url").notNull().default(""),
+    featuredTrackUrl: text("featured_track_url").notNull().default(""),
+    featStatus: featStatusEnum("feat_status").notNull().default("open"),
+    collaborationTypes: jsonb("collaboration_types").$type<string[]>().notNull().default([]),
+    pricingMode: pricingModeEnum("pricing_mode").notNull().default("starting_from"),
+    currency: text("currency").notNull().default("EUR"),
     /** Stripe Connect Express account that receives payouts for paid work. */
     stripeAccountId: text("stripe_account_id"),
     /** Mirrors charges_enabled && payouts_enabled from account.updated. */

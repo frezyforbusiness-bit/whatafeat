@@ -17,7 +17,11 @@ const ART_PALETTES=[
   {bg:'#201608',layer:'radial-gradient(ellipse 80% 80% at 30% 68%,#4e3808 0%,#201608 62%),radial-gradient(ellipse 50% 50% at 76% 22%,#302010 0%,transparent 55%)'},
   {bg:'#080e20',layer:'radial-gradient(ellipse 80% 80% at 60% 58%,#0a1c52 0%,#080e20 62%),radial-gradient(ellipse 50% 50% at 28% 18%,#10162c 0%,transparent 55%)'},
 ] as const;
-export function Artwork({art,className=''}:{art:number;className?:string}){const p=ART_PALETTES[art%ART_PALETTES.length];return <div role="img" aria-label="Original demo cover artwork" className={`cover ${className}`} style={{background:`${p.layer},${p.bg}`}}/>}
+export function Artwork({art,className='',src,alt='artist artwork'}:{art:number;className?:string;src?:string;alt?:string}){
+  if(src)return <img src={src} alt={alt} className={`cover cover-photo ${className}`}/>;
+  const p=ART_PALETTES[art%ART_PALETTES.length];
+  return <div role="img" aria-label={alt} className={`cover ${className}`} style={{background:`${p.layer},${p.bg}`}}/>;
+}
 const time=(s:number)=>`${Math.floor(s/60)}:${Math.floor(s%60).toString().padStart(2,'0')}`;
 
 const INIT_VOL=0.7;

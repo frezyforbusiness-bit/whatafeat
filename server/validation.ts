@@ -94,6 +94,106 @@ export const onboardingSchema = z.object({
   trade: z.boolean(),
 });
 
+const slugSchema = z
+  .string()
+  .trim()
+  .min(1, "pick a username.")
+  .max(60)
+  .transform((v) => v.toLowerCase())
+  .refine((v) => /^[a-z0-9-]+$/.test(v), "use lowercase letters, numbers and hyphens.");
+
+const optionalUrl = trimmed(500)
+  .optional()
+  .transform((v) => v ?? "")
+  .refine((v) => {
+    if (!v) return true;
+    try {
+      const href = v.includes("://") ? v : `https://${v}`;
+      new URL(href);
+      return true;
+    } catch {
+      return false;
+    }
+  }, "enter a valid link.");
+
+const stringList = z.array(z.string().trim().min(1).max(60)).max(20).optional();
+
+export const profileBasicSchema = z.object({
+  name: required(80, "add your artist name."),
+  slug: slugSchema,
+  location: trimmed(120).optional(),
+  artistTypes: z.array(z.string().trim().min(1).max(40)).min(1, "pick at least one artist type."),
+});
+
+export const profileSoundSchema = z.object({
+  genres: stringList,
+  influences: stringList,
+  language: trimmed(40).optional(),
+});
+
+export const profileMusicSchema = z.object({
+  spotifyUrl: optionalUrl,
+  appleMusicUrl: optionalUrl,
+  soundcloudUrl: optionalUrl,
+  youtubeUrl: optionalUrl,
+  instagramUrl: optionalUrl,
+  tiktokUrl: optionalUrl,
+  featuredTrackUrl: optionalUrl,
+});
+
+export const profileFeatSchema = z.object({
+  featStatus: z.enum(["open", "selective", "closed"]),
+  collaborationTypes: z.array(z.enum(["paid", "swap", "free", "offers"])).optional(),
+  pricingMode: z.enum(["fixed", "starting_from", "offer"]).optional(),
+  price: euros.optional(),
+  currency: z.enum(["EUR", "USD", "GBP"]).optional(),
+});
+
+export const profileAboutSchema = z.object({
+  bio: trimmed(160).optional(),
+  description: trimmed(4000).optional(),
+});
+
+export const saveProfileDraftSchema = z
+  .object({
+    name: trimmed(80).optional(),
+    slug: slugSchema.optional(),
+    location: trimmed(120).optional(),
+    artistTypes: z.array(z.string().trim().min(1).max(40)).max(10).optional(),
+    genres: stringList,
+    influences: stringList,
+    language: trimmed(40).optional(),
+    bio: trimmed(160).optional(),
+    description: trimmed(4000).optional(),
+    spotifyUrl: optionalUrl,
+    appleMusicUrl: optionalUrl,
+    soundcloudUrl: optionalUrl,
+    youtubeUrl: optionalUrl,
+    instagramUrl: optionalUrl,
+    tiktokUrl: optionalUrl,
+    featuredTrackUrl: optionalUrl,
+    featStatus: z.enum(["open", "selective", "closed"]).optional(),
+    collaborationTypes: z.array(z.enum(["paid", "swap", "free", "offers"])).optional(),
+    pricingMode: z.enum(["fixed", "starting_from", "offer"]).optional(),
+    price: euros.optional(),
+    currency: z.enum(["EUR", "USD", "GBP"]).optional(),
+  })
+  .strict();
+
+export const finalizeOnboardingSchema = z.object({
+  name: required(80, "add your artist name."),
+  slug: slugSchema,
+  artistTypes: z.array(z.string().trim().min(1).max(40)).min(1, "pick at least one artist type."),
+});
+
+export const profileSectionSchema = z.enum(["profile", "sound", "music", "feat", "socials"]);
+
+export const updateProfileSectionSchema = z.object({
+  section: profileSectionSchema,
+  data: z.record(z.string(), z.unknown()),
+});
+
+
 export const saveOfferSchema = z.object({
   id: z.string().uuid().optional(),
   title: required(120, "Add a title."),

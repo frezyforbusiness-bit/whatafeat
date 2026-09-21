@@ -1,5 +1,6 @@
 "use server";
 
+import { z } from "zod";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { head } from "@vercel/blob";
@@ -50,15 +51,24 @@ import {
   applicationStatusSchema,
   applySchema,
   contributionSchema,
+  finalizeOnboardingSchema,
   onboardingSchema,
   parseOrThrow,
   proposalActionSchema,
   reviewSchema,
   saveOfferSchema,
+  saveProfileDraftSchema,
   saveVerseSchema,
   sendProposalSchema,
+  updateProfileSectionSchema,
   verseStatusSchema,
+  profileBasicSchema,
+  profileSoundSchema,
+  profileMusicSchema,
+  profileFeatSchema,
+  profileAboutSchema,
 } from "@/server/validation";
+import { derivePrimaryGenre, deriveTrade } from "@/lib/profile-constants";
 
 function revalidateApp() {
   revalidatePath("/", "layout");
@@ -141,24 +151,112 @@ export async function getProdBootstrap() {
 }
 
 export async function completeOnboarding(input: unknown) {
+  // Legacy alias — prefer finalizeOnboarding + saveProfileDraft.
   const data = parseOrThrow(onboardingSchema, input);
+  await saveProfileDraft({
+    name: data.name,
+    slug: data.slug,
+    bio: data.bio,
+    genres: [data.genre],
+    language: data.language,
+    featStatus: data.trade ? "open" : "closed",
+    collaborationTypes: data.trade ? ["swap"] : [],
+  });
+  return finalizeOnboarding({
+    name: data.name,
+    slug: data.slug,
+    artistTypes: ["other"],
+  });
+}
+
+export async function updateProfile(input: unknown) {
+  return completeOnboarding(input);
+}
+
+type DraftInput = z.infer<typeof saveProfileDraftSchema>;
+
+function patchFromDraft(data: DraftInput) {
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+
+  if (data.name !== undefined) patch.name = data.name;
+  if (data.slug !== undefined) patch.slug = data.slug;
+  if (data.location !== undefined) patch.location = data.location;
+  if (data.artistTypes !== undefined) patch.artistTypes = data.artistTypes;
+  if (data.genres !== undefined) {
+    patch.genres = data.genres;
+    patch.genre = derivePrimaryGenre(data.genres);
+  }
+  if (data.influences !== undefined) patch.influences = data.influences;
+  if (data.language !== undefined) patch.language = data.language;
+  if (data.bio !== undefined) patch.bio = data.bio;
+  if (data.description !== undefined) patch.description = data.description;
+  if (data.spotifyUrl !== undefined) patch.spotifyUrl = data.spotifyUrl;
+  if (data.appleMusicUrl !== undefined) patch.appleMusicUrl = data.appleMusicUrl;
+  if (data.soundcloudUrl !== undefined) patch.soundcloudUrl = data.soundcloudUrl;
+  if (data.youtubeUrl !== undefined) patch.youtubeUrl = data.youtubeUrl;
+  if (data.instagramUrl !== undefined) patch.instagramUrl = data.instagramUrl;
+  if (data.tiktokUrl !== undefined) patch.tiktokUrl = data.tiktokUrl;
+  if (data.featuredTrackUrl !== undefined) patch.featuredTrackUrl = data.featuredTrackUrl;
+  if (data.featStatus !== undefined) patch.featStatus = data.featStatus;
+  if (data.collaborationTypes !== undefined) patch.collaborationTypes = data.collaborationTypes;
+  if (data.pricingMode !== undefined) patch.pricingMode = data.pricingMode;
+  if (data.price !== undefined) patch.priceCents = toCents(data.price);
+  if (data.currency !== undefined) patch.currency = data.currency;
+
+  const featStatus = (data.featStatus ?? undefined) as string | undefined;
+  const collab = data.collaborationTypes;
+  if (featStatus !== undefined || collab !== undefined) {
+    // trade is derived when either side of the pair is present; caller should
+    // pass both when updating feat settings, otherwise we recompute from patch + later merge.
+  }
+
+  return patch;
+}
+
+export async function saveProfileDraft(input: unknown) {
+  const data = parseOrThrow(saveProfileDraftSchema, input);
   const { profile } = await requireArtist();
   const db = getDb();
+
+  if (data.slug) {
+    const clash = await db
+      .select({ id: artistProfiles.id })
+      .from(artistProfiles)
+      .where(and(eq(artistProfiles.slug, data.slug), ne(artistProfiles.id, profile.id)))
+      .limit(1);
+    if (clash.length) throw new Error("that username is taken.");
+  }
+
+  const patch = patchFromDraft(data);
+  const nextFeat = (data.featStatus ?? profile.featStatus) as string;
+  const nextCollab = (data.collaborationTypes ?? profile.collaborationTypes ?? []) as string[];
+  if (data.featStatus !== undefined || data.collaborationTypes !== undefined) {
+    patch.trade = deriveTrade(nextFeat, nextCollab);
+  }
+
+  await db.update(artistProfiles).set(patch).where(eq(artistProfiles.id, profile.id));
+  revalidateApp();
+  return { ok: true };
+}
+
+export async function finalizeOnboarding(input: unknown) {
+  const data = parseOrThrow(finalizeOnboardingSchema, input);
+  const { profile } = await requireArtist();
+  const db = getDb();
+
   const clash = await db
     .select({ id: artistProfiles.id })
     .from(artistProfiles)
     .where(and(eq(artistProfiles.slug, data.slug), ne(artistProfiles.id, profile.id)))
     .limit(1);
-  if (clash.length) throw new Error("That slug is already in use.");
+  if (clash.length) throw new Error("that username is taken.");
+
   await db
     .update(artistProfiles)
     .set({
       name: data.name,
       slug: data.slug,
-      bio: data.bio ?? "",
-      genre: data.genre,
-      language: data.language,
-      trade: data.trade,
+      artistTypes: data.artistTypes,
       onboardingComplete: true,
       updatedAt: new Date(),
     })
@@ -167,8 +265,72 @@ export async function completeOnboarding(input: unknown) {
   return { ok: true };
 }
 
-export async function updateProfile(input: unknown) {
-  return completeOnboarding(input);
+export async function updateProfileSection(input: unknown) {
+  const { section, data } = parseOrThrow(updateProfileSectionSchema, input);
+  let draft: unknown;
+  switch (section) {
+    case "profile":
+      draft = parseOrThrow(profileBasicSchema, data);
+      break;
+    case "sound":
+      draft = parseOrThrow(profileSoundSchema, data);
+      break;
+    case "music":
+    case "socials":
+      draft = parseOrThrow(profileMusicSchema, data);
+      break;
+    case "feat":
+      draft = parseOrThrow(profileFeatSchema, data);
+      break;
+    default:
+      throw new Error("Unknown section.");
+  }
+  await saveProfileDraft(draft);
+  return { ok: true };
+}
+
+export async function checkSlugAvailable(slugInput: unknown) {
+  const slug = parseOrThrow(
+    z.string().trim().min(1).max(60).transform((v) => v.toLowerCase()),
+    slugInput,
+  );
+  if (!/^[a-z0-9-]+$/.test(slug)) return { available: false, reason: "invalid" as const };
+  const { profile } = await requireArtist();
+  const db = getDb();
+  const clash = await db
+    .select({ id: artistProfiles.id })
+    .from(artistProfiles)
+    .where(and(eq(artistProfiles.slug, slug), ne(artistProfiles.id, profile.id)))
+    .limit(1);
+  return { available: clash.length === 0, reason: clash.length ? ("taken" as const) : ("ok" as const) };
+}
+
+export async function recordProfileAvatar(input: { pathname: string; url: string; name: string }) {
+  const { session, profile } = await requireArtist();
+  const meta = await head(input.url);
+  assertOwnedBlobPath(meta, { userId: session.user.id, kind: "artwork" });
+  if ((meta.size ?? 0) > 10 * 1024 * 1024) throw new Error("Artwork must be 10 MB or smaller.");
+  const mime = meta.contentType ?? "";
+  if (!["image/jpeg", "image/png", "image/webp"].includes(mime)) {
+    throw new Error("Choose a JPEG, PNG or WebP image.");
+  }
+
+  const asset = await recordAsset({
+    userId: session.user.id,
+    blobUrl: meta.url ?? input.url,
+    pathname: meta.pathname ?? input.pathname,
+    mime,
+    size: meta.size ?? 0,
+    visibility: "public",
+  });
+
+  const db = getDb();
+  await db
+    .update(artistProfiles)
+    .set({ avatarAssetId: asset.id, updatedAt: new Date() })
+    .where(eq(artistProfiles.id, profile.id));
+  revalidateApp();
+  return { ok: true, assetId: asset.id, url: `/api/assets/${asset.id}` };
 }
 
 /**

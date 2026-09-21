@@ -30,7 +30,11 @@ type CollabRow = typeof collaborations.$inferSelect;
 type ContribRow = typeof contributions.$inferSelect;
 type MessageRow = typeof messages.$inferSelect;
 
-export function mapArtist(p: Profile): Artist {
+export function mapArtist(p: Profile, avatarUrl?: string): Artist {
+  const genres = Array.isArray(p.genres) && p.genres.length ? p.genres : p.genre ? [p.genre] : [];
+  const collaborationTypes = Array.isArray(p.collaborationTypes) ? p.collaborationTypes : [];
+  const artistTypes = Array.isArray(p.artistTypes) ? p.artistTypes : [];
+  const influences = Array.isArray(p.influences) ? p.influences : [];
   return {
     id: p.id,
     slug: p.slug,
@@ -43,6 +47,24 @@ export function mapArtist(p: Profile): Artist {
     days: p.deliveryDays,
     trade: p.trade,
     demo: p.hasDemo,
+    location: p.location || "",
+    artistTypes,
+    genres,
+    influences,
+    description: p.description || "",
+    spotifyUrl: p.spotifyUrl || "",
+    appleMusicUrl: p.appleMusicUrl || "",
+    soundcloudUrl: p.soundcloudUrl || "",
+    youtubeUrl: p.youtubeUrl || "",
+    instagramUrl: p.instagramUrl || "",
+    tiktokUrl: p.tiktokUrl || "",
+    featuredTrackUrl: p.featuredTrackUrl || "",
+    featStatus: p.featStatus,
+    collaborationTypes,
+    pricingMode: p.pricingMode,
+    currency: p.currency || "EUR",
+    avatarUrl,
+    onboardingComplete: p.onboardingComplete,
   };
 }
 
