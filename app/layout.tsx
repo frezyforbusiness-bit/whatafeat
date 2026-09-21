@@ -3,6 +3,7 @@ import "./globals.css";
 import { AuthProvider } from "@/features/auth-provider";
 import { Suspense } from "react";
 import { Inter, Geist_Mono } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -36,6 +37,7 @@ export default function RootLayout({
         <AuthProvider>
           <Suspense fallback={<p>loading the scene…</p>}>{children}</Suspense>
         </AuthProvider>
+        <Analytics />
       </body>
     </html>
   );
