@@ -22,7 +22,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "check:prod-env": "node scripts/check-prod-env.mjs"
+    "check:prod-env": "node scripts/check-prod-env.mjs",
+    "go-live": "node scripts/go-live.mjs"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",

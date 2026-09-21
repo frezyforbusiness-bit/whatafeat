@@ -15,7 +15,16 @@ configured: they need `PAYMENTS_ENABLED=1` **and** both `STRIPE_SECRET_KEY` and
 
 ## Production go-live
 
-Follow the checklists (do not skip migrations):
+Automate what you can after Neon / Google / Blob exist:
+
+```sh
+npm run go-live -- prepare   # .env.local + AUTH_SECRET / CRON_SECRET
+# paste DATABASE_URL, AUTH_GOOGLE_*, BLOB_READ_WRITE_TOKEN into .env.local
+export VERCEL_TOKEN=…        # or: npx vercel login
+npm run go-live              # migrate + sync Vercel env + prod deploy when ready
+```
+
+Manual checklists (do not skip migrations):
 
 1. [docs/GO_LIVE.md](docs/GO_LIVE.md) — Trade soft launch (Neon, Auth, Blob, smoke)
 2. [docs/STRIPE_TEST_MATRIX.md](docs/STRIPE_TEST_MATRIX.md) — Stripe test-mode certification
